@@ -1,0 +1,76 @@
+services:
+  # Local infra only. OpenSearch → AWS via OPENSEARCH_URL in .env
+  postgres:
+    image: postgres:16-alpine
+    container_name: fm-memory-postgres
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: memory
+      POSTGRES_PASSWORD: memory
+      POSTGRES_DB: fluentmind_memory
+    volumes:
+      - fm-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U memory -d fluentmind_memory"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: fm-memory-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - fm-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: fm-memory-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # Optional dev UIs — browse Postgres tables and Redis keys in the browser
+  pgadmin:
+    image: dpage/pgadmin4:8
+    container_name: fm-memory-pgadmin
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@local.dev
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    volumes:
+      - fm-pgadmin-data:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  redisinsight:
+    image: redis/redisinsight:latest
+    container_name: fm-memory-redis-ui
+    ports:
+      - "5540:5540"
+    volumes:
+      - fm-redisinsight-data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  fm-postgres-data:
+  fm-redis-data:
+  fm-pgadmin-data:
+  fm-redisinsight-data:

@@ -1,0 +1,35 @@
+{
+  "name": "agent-memory-poc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "FluentMind memory platform POC — plain JavaScript (no TypeScript)",
+  "engines": {
+    "node": ">=20"
+  },
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./clients/js/index.js"
+  },
+  "scripts": {
+    "api": "node src/grpc/server.js",
+    "chat": "node clients/js/chat-demo.js",
+    "worker": "node src/worker/index.js",
+    "register:demo": "node scripts/register-demo-agent.js",
+    "docker:up": "docker compose up -d postgres redis rabbitmq pgadmin redisinsight",
+    "docker:down": "docker compose down"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "^3.0.71",
+    "@grpc/grpc-js": "^1.12.0",
+    "@grpc/proto-loader": "^0.7.13",
+    "@opensearch-project/opensearch": "^2.7.0",
+    "ai": "^6.0.205",
+    "amqplib": "^0.10.4",
+    "dotenv": "^16.4.5",
+    "ioredis": "^5.4.1",
+    "openai": "^4.52.0",
+    "pg": "^8.13.0",
+    "zod": "^4.4.3"
+  }
+}

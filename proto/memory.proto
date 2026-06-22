@@ -1,0 +1,115 @@
+// gRPC contract for memory-api — see README for RPC lifecycle notes.
+syntax = "proto3";
+
+package memory;
+
+service MemoryAPI {
+  rpc Assemble(AssembleRequest) returns (AssembleResponse);
+  rpc GetSession(GetSessionRequest) returns (SessionResponse);
+  rpc AppendTurn(AppendTurnRequest) returns (AppendTurnResponse);
+  rpc Search(SearchRequest) returns (SearchResponse);
+  rpc EndSession(EndSessionRequest) returns (EndSessionResponse);
+  rpc RegisterAgent(RegisterAgentRequest) returns (RegisterAgentResponse);
+}
+
+message AssembleRequest {
+  string agent_id = 1;
+  string user_id = 2;
+  string conversation_id = 3;
+  string user_query = 4;
+  MemoryConfig memory_config = 5;
+  bool incognito = 6;
+}
+
+message MemoryConfig {
+  repeated string types_enabled = 1;
+  bool experiential_enabled = 2;
+  int32 retrieval_k = 3;
+  int32 summarize_token_threshold = 4;
+}
+
+message TurnRecord {
+  string id = 1;
+  string user = 2;
+  string assistant = 3;
+}
+
+message MemoryHit {
+  string memory_id = 1;
+  string type = 2;
+  string content = 3;
+  double score = 4;
+}
+
+message AssembleResponse {
+  string summary = 1;
+  repeated TurnRecord recent = 2;
+  repeated MemoryHit memories = 3;
+  string context_block = 4;
+  int32 latency_ms = 5;
+}
+
+message GetSessionRequest {
+  string conversation_id = 1;
+}
+
+message SessionResponse {
+  string conversation_id = 1;
+  string summary = 2;
+  repeated TurnRecord recent = 3;
+  int32 turn_count = 4;
+  int32 last_prompt_tokens = 5;
+}
+
+message AppendTurnRequest {
+  string agent_id = 1;
+  string user_id = 2;
+  string conversation_id = 3;
+  TurnRecord turn = 4;
+  bool incognito = 5;
+  MemoryConfig memory_config = 6;
+  int32 last_prompt_tokens = 7;
+}
+
+message AppendTurnResponse {
+  int32 turn_count = 1;
+  bool summarize_scheduled = 2;
+  int32 last_prompt_tokens = 3;
+}
+
+message SearchRequest {
+  string agent_id = 1;
+  string user_id = 2;
+  string query = 3;
+  int32 top_k = 4;
+}
+
+message SearchResponse {
+  repeated MemoryHit results = 1;
+}
+
+message EndSessionRequest {
+  string agent_id = 1;
+  string user_id = 2;
+  string conversation_id = 3;
+  MemoryConfig memory_config = 4;
+  bool clear_session = 5;
+}
+
+message EndSessionResponse {
+  bool scheduled = 1;
+  bool semantic_updated = 2;
+  bool episodic_written = 3;
+  bool experiential_written = 4;
+}
+
+message RegisterAgentRequest {
+  string agent_id = 1;
+  string system_prompt = 2;
+  repeated string types_enabled = 3;
+  bool experiential_enabled = 4;
+}
+
+message RegisterAgentResponse {
+  bool memory_code_generated = 1;
+}

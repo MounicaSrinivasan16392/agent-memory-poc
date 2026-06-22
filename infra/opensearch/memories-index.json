@@ -1,0 +1,36 @@
+{
+  "settings": {
+    "index": {
+      "knn": true,
+      "number_of_shards": 1,
+      "number_of_replicas": 2
+    }
+  },
+  "mappings": {
+    "properties": {
+      "memory_id": { "type": "keyword" },
+      "agent_id": { "type": "keyword" },
+      "scope": { "type": "keyword" },
+      "type": { "type": "keyword" },
+      "content": { "type": "text" },
+      "importance": { "type": "float" },
+      "valid_to": { "type": "date" },
+      "is_deleted": { "type": "boolean" },
+      "created_at": { "type": "date" },
+      "updated_at": { "type": "date" },
+      "embedding": {
+        "type": "knn_vector",
+        "dimension": 3072,
+        "method": {
+          "name": "hnsw",
+          "space_type": "cosinesimil",
+          "engine": "faiss",
+          "parameters": {
+            "ef_construction": 128,
+            "m": 16
+          }
+        }
+      }
+    }
+  }
+}

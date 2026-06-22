@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FluentMind Memory — Chat Test</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>FluentMind Memory Chat</h1>
+      <div id="health" class="health">Connecting…</div>
+    </header>
+
+    <main>
+      <section class="chat-panel">
+        <div id="messages" class="messages"></div>
+        <form id="chat-form" class="chat-form">
+          <textarea id="input" rows="2" placeholder="Ask something… (e.g. What is our Q3 budget?)" required></textarea>
+          <button type="submit">Send</button>
+        </form>
+      </section>
+
+      <aside class="side-panel">
+        <div class="card">
+          <h2>Session</h2>
+          <label>Agent ID <input id="agent-id" value="demo_sales_agent" /></label>
+          <label>User ID <input id="user-id" value="user_alice" /></label>
+          <label>Conversation <input id="conv-id" readonly /></label>
+          <p>Turns: <strong id="turn-count">0</strong></p>
+          <div class="actions">
+            <button type="button" id="btn-new">New chat</button>
+            <button type="button" id="btn-end">End session</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Memories matched</h2>
+          <ul id="memories" class="mem-list"></ul>
+        </div>
+
+        <div class="card">
+          <h2>Semantic profile</h2>
+          <pre id="profile" class="pre-block">—</pre>
+        </div>
+
+        <div class="card">
+          <h2>Session summary (Redis)</h2>
+          <pre id="summary" class="pre-block">—</pre>
+        </div>
+
+        <div class="card">
+          <h2>Injected context</h2>
+          <pre id="context" class="pre-block">—</pre>
+        </div>
+      </aside>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
