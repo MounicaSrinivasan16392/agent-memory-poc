@@ -1,6 +1,6 @@
 # Postgres database architecture
 
-FluentMind splits **policy + index metadata** (Postgres) from **searchable content** (OpenSearch).
+FluentMind splits **policy + index metadata** (Postgres) from **searchable content** (Qdrant).
 
 ---
 
@@ -15,13 +15,13 @@ flowchart LR
     MRL[memory_recall_log]
   end
 
-  subgraph OS["OpenSearch — content + search"]
-    IDX["{agentId}-memories index"]
+  subgraph QD["Qdrant — content + vectors"]
+    COL["{agentId} collection"]
   end
 
   MT -.->|"all agents use all 3"| MS
   MS --> MM
-  MM -.->|"opensearch_doc_id"| IDX
+  MM -.->|"id"| COL
 ```
 
 ---
@@ -59,8 +59,6 @@ erDiagram
     varchar agent_id
     varchar memory_type_key
     varchar scope
-    varchar opensearch_doc_id
-    real importance
     varchar source_message_id
     boolean is_deleted
     timestamptz created_at
@@ -123,7 +121,7 @@ PER AGENT
   memory_stores.agent_id — policy + memory_code
 
 PER AGENT DATA
-  memory_metadata.agent_id → OpenSearch doc
+  memory_metadata.agent_id → Qdrant point
 ```
 
 During testing, reset Postgres by dropping the Docker volume when the schema changes.

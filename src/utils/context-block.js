@@ -12,8 +12,12 @@ function formatContextBlock(input) {
       sections.push(`Assistant: ${turn.assistant}`);
     }
   }
-  if (input.memories.length > 0) {
+  if (input.semanticProfile) {
     sections.push("## What I know about you");
+    sections.push(input.semanticProfile);
+  }
+  if (input.memories.length > 0) {
+    sections.push("## Recalled memories");
     for (const mem of input.memories) {
       sections.push(`- (${mem.type}) ${mem.content}`);
     }

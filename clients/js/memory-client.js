@@ -14,14 +14,6 @@ import protoLoader from '@grpc/proto-loader';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROTO = path.join(__dirname, '../../proto/memory.proto');
 
-/** Default memory_config sent with assemble / append / session_end. */
-export const DEFAULT_MEMORY_CONFIG = {
-  types_enabled: ['semantic', 'episodic'],
-  experiential_enabled: false,
-  retrieval_k: 6,
-  summarize_token_threshold: 1000,
-};
-
 function unary(client, method, request) {
   return new Promise((resolve, reject) => {
     client[method](request, (err, response) => {
@@ -29,16 +21,6 @@ function unary(client, method, request) {
       else resolve(response);
     });
   });
-}
-
-function toMemoryConfig(cfg = DEFAULT_MEMORY_CONFIG) {
-  return {
-    types_enabled: cfg.types_enabled ?? DEFAULT_MEMORY_CONFIG.types_enabled,
-    experiential_enabled: cfg.experiential_enabled ?? false,
-    retrieval_k: cfg.retrieval_k ?? DEFAULT_MEMORY_CONFIG.retrieval_k,
-    summarize_token_threshold:
-      cfg.summarize_token_threshold ?? DEFAULT_MEMORY_CONFIG.summarize_token_threshold,
-  };
 }
 
 function mapAssembleResponse(res) {
@@ -101,16 +83,12 @@ export class MemoryClient {
     userId,
     conversationId,
     userQuery = '',
-    memoryConfig = DEFAULT_MEMORY_CONFIG,
-    incognito = false,
   }) {
     const res = await unary(this._client, 'Assemble', {
       agent_id: agentId,
       user_id: userId,
       conversation_id: conversationId,
       user_query: userQuery,
-      memory_config: toMemoryConfig(memoryConfig),
-      incognito,
     });
     return mapAssembleResponse(res);
   }
@@ -143,8 +121,6 @@ export class MemoryClient {
     conversationId,
     turn,
     lastPromptTokens,
-    incognito = false,
-    memoryConfig = DEFAULT_MEMORY_CONFIG,
   }) {
     const res = await unary(this._client, 'AppendTurn', {
       agent_id: agentId,
@@ -155,8 +131,6 @@ export class MemoryClient {
         user: turn.user,
         assistant: turn.assistant,
       },
-      incognito,
-      memory_config: toMemoryConfig(memoryConfig),
       last_prompt_tokens: lastPromptTokens ?? 0,
     });
     return {
@@ -171,14 +145,12 @@ export class MemoryClient {
     agentId,
     userId,
     conversationId,
-    memoryConfig = DEFAULT_MEMORY_CONFIG,
     clearSession = true,
   }) {
     const res = await unary(this._client, 'EndSession', {
       agent_id: agentId,
       user_id: userId,
       conversation_id: conversationId,
-      memory_config: toMemoryConfig(memoryConfig),
       clear_session: clearSession,
     });
     return {
@@ -189,7 +161,7 @@ export class MemoryClient {
     };
   }
 
-  /** Hybrid long-term memory search. Empty query returns semantic profile when present. */
+  /** Vector search over episodic/experiential long-term memories. */
   async search({ agentId, userId, query, topK = 6 }) {
     const res = await unary(this._client, 'Search', {
       agent_id: agentId,
@@ -203,6 +175,20 @@ export class MemoryClient {
       content: m.content,
       score: m.score,
     }));
+  }
+
+  /** Long-term semantic profile — load once at chat start. */
+  async getSemanticProfile({ agentId, userId }) {
+    const res = await unary(this._client, 'GetSemanticProfile', {
+      agent_id: agentId,
+      user_id: userId,
+    });
+    const content = res.content?.trim() ?? '';
+    if (!content) return null;
+    return {
+      memoryId: res.memory_id || null,
+      content,
+    };
   }
 
   close() {

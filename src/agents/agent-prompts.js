@@ -7,9 +7,11 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROMPTS_DIR = join(__dirname, "../prompts");
+
 const AGENT_PROMPT_FILES = {
   demo_sales_agent: "demo_sales_agent_prompt.md"
 };
+
 function loadAgentPrompt(agentId) {
   const file = AGENT_PROMPT_FILES[agentId];
   if (!file) return null;

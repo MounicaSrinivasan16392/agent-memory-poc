@@ -1,17 +1,14 @@
 /** Per-agent memory store rows — policy specification and memory_code. */
+import { config } from "../config.js";
 import { getPool } from "./client.js";
 import { newId } from "../utils/id.js";
 import { MemoryTypesDb } from "./memory-types.js";
 
-
 const DEFAULT_SPEC = {
-  types_enabled: ["semantic", "episodic", "experiential"],
-  experiential_enabled: true,
-  retrieval_k: 6,
-  summarize_token_threshold: 1000,
-  embed_model: "text-embedding-3-large"
+  types_enabled: config.memory.typesEnabled,
+  retrieval_k: config.memory.retrievalK,
+  summarize_token_threshold: config.memory.summarizeTokenThreshold
 };
-
 
 class MemoryStoresDb {
 
@@ -42,7 +39,7 @@ class MemoryStoresDb {
       [
         storeId,
         agentId,
-        `Default memory \u2014 ${agentId}`,
+        `Default memory - ${agentId}`,
         refName,
         null,
         JSON.stringify(DEFAULT_SPEC)
@@ -69,11 +66,9 @@ function rowToRecord(row) {
     refName: String(row["ref_name"]),
     memoryCode: row["memory_code"] != null ? String(row["memory_code"]) : null,
     specification: {
-      typesEnabled: spec["types_enabled"] ?? ["semantic", "episodic", "experiential"],
-      experientialEnabled: spec["experiential_enabled"] !== false,
-      retrievalK: Number(spec["retrieval_k"] ?? 6),
-      summarizeTokenThreshold: Number(spec["summarize_token_threshold"] ?? 1000),
-      embedModel: String(spec["embed_model"] ?? "text-embedding-3-large")
+      typesEnabled: spec["types_enabled"] ?? config.memory.typesEnabled,
+      retrievalK: Number(spec["retrieval_k"] ?? config.memory.retrievalK),
+      summarizeTokenThreshold: Number(spec["summarize_token_threshold"] ?? config.memory.summarizeTokenThreshold)
     }
   };
 }

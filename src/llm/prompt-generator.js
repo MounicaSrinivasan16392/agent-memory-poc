@@ -8,10 +8,7 @@ async function generateAgentMemoryCode(input) {
   const wrapper = loadPlatformPrompt("generate_agent_memory.md");
   const context = JSON.stringify({
     system_prompt: input.systemPrompt.slice(0, 4e3),
-    tools: input.tools ?? [],
-    datastores: input.datastores ?? [],
-    types_enabled: input.typesEnabled,
-    experiential_enabled: input.experientialEnabled
+    types_enabled: input.typesEnabled
   });
   const response = await client.chat.completions.create({
     model: config.openai.model,

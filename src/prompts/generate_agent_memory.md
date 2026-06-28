@@ -13,6 +13,11 @@ The memory_code must include these sections:
 How to merge/dedup the semantic profile from the full session (summary + recent turns).
 What durable facts to keep vs ignore. When to write an episodic session narrative.
 
+## Experiential (shared insights) — include when `experiential` is in types_enabled
+When to write a shared, PII-stripped insight reusable across users (`experiential` JSON field at session end).
+What counts as a reusable pattern vs client-specific facts that belong only in semantic/episodic.
+Require generic phrasing with no names, companies, or identifiers.
+
 ## Working memory summarize
 What to preserve vs compress in the rolling Redis session summary (names, figures, decisions).
 This is short-term context only — not long-term semantic storage.

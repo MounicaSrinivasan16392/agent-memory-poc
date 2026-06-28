@@ -2,6 +2,16 @@
  * Shared memory LLM caller — wraps platform.memory.system.md + agent memory_code.
  * Tasks: summarize, session_end
  */
+
+/** this function is used to call the memory LLM */
+/**
+ * @param {string} task - the task to perform
+ * @param {string} memoryCode - the memory code to use
+ * @param {string} inputBlock - the input block to use - inputBlock is the input to the LLM ie input to the task is the chat messages.
+ * @returns {Promise<string>} the response from the memory LLM
+ */ 
+
+
 import OpenAI from "openai";
 import { config } from "../config.js";
 import { loadPlatformPrompt } from "./load-prompt.js";

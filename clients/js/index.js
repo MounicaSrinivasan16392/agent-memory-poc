@@ -4,7 +4,6 @@
 export {
   createMemoryClient,
   MemoryClient,
-  DEFAULT_MEMORY_CONFIG,
 } from './memory-client.js';
 
 export { createMemoryTools } from './memory-tools.js';

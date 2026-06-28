@@ -1,5 +1,5 @@
 /**
- * Platform bootstrap — wires Redis session store, Postgres/OpenSearch long-term
+ * Platform bootstrap — wires Redis session store, Postgres/Qdrant long-term
  * memory, controllers, and optional RabbitMQ publisher.
  * Used by: grpc/server.js, worker/index.js, scripts/register-demo-agent.js
  */
@@ -11,25 +11,26 @@ import { ObserveHandler } from "./controller/ObserveHandler.js";
 import { PromptGenerator } from "./controller/PromptGenerator.js";
 import { SessionEndHandler } from "./controller/SessionEndHandler.js";
 import { SummarizeHandler } from "./controller/SummarizeHandler.js";
-import { createOpenSearchClient, probeOpenSearch } from "./opensearch/client.js";
-import { IndexManager } from "./opensearch/index-manager.js";
-import { OpenSearchMemoriesStore } from "./opensearch/memories-store.js";
+import { createQdrantClient, probeQdrant } from "./qdrant/client.js";
+import { CollectionManager } from "./qdrant/collection-manager.js";
+import { QdrantMemoriesStore } from "./qdrant/memories-store.js";
 import { closePostgres, initPostgres, probePostgres } from "./postgres/client.js";
 import { MemoryMetadataDb } from "./postgres/memory-metadata.js";
 import { MemoryStoresDb } from "./postgres/memory-stores.js";
 import { RecallLogDb } from "./postgres/recall-log.js";
-import { PostgresOpenSearchMemories } from "./stores/MemoriesRepository.js";
+import { PostgresQdrantMemories } from "./stores/MemoriesRepository.js";
 import { createRedisClient, RedisStore } from "./stores/RedisStore.js";
+
 async function createMemoryPlatform(publisher = null) {
   if (!config.openai.apiKey) {
-    throw new Error("[memory] OPENAI_API_KEY required \u2014 set in .env");
+    throw new Error("[memory] OPENAI_API_KEY required - set in .env");
   }
   const { store: sessionStore, redis } = await createSessionStore();
-  const { memories, memoryStores, recallLog, postgresConnected, opensearchConnected } = await createLongTermStores();
+  const { memories, memoryStores, recallLog, postgresConnected, qdrantConnected } = await createLongTermStores();
   const memoryService = new MemoryService(memories, memoryStores);
   const promptGenerator = new PromptGenerator(memoryStores);
   console.log(
-    `[memory] platform ready \u2014 postgres=${postgresConnected} opensearch=${opensearchConnected}`
+    `[memory] platform ready - postgres=${postgresConnected} qdrant=${qdrantConnected}`
   );
   return {
     sessionStore,
@@ -41,9 +42,9 @@ async function createMemoryPlatform(publisher = null) {
     summarizeHandler: new SummarizeHandler(sessionStore),
     sessionEndHandler: new SessionEndHandler(sessionStore, memoryService, publisher),
     promptGenerator,
-    agentSetup: new AgentSetupService(memoryStores, promptGenerator),
+    agentSetup: new AgentSetupService(memoryStores, promptGenerator, memories),
     postgresConnected,
-    opensearchConnected,
+    qdrantConnected,
     shutdown: () => shutdownConnections(redis, sessionStore)
   };
 }
@@ -66,13 +67,14 @@ async function createSessionStore() {
     await redis.quit().catch(() => {
     });
     throw new Error(
-      `[memory] Redis required at ${config.redis.host}:${config.redis.port} \u2014 start docker compose. ${err}`
+      `[memory] Redis required at ${config.redis.host}:${config.redis.port} - start docker compose. ${err}`
     );
   }
 }
+
 async function createLongTermStores() {
   const pgOk = await probePostgres().catch(() => false);
-  const osOk = await probeOpenSearch();
+  const qdrantOk = await probeQdrant();
   if (pgOk) {
     try {
       await initPostgres();
@@ -80,23 +82,23 @@ async function createLongTermStores() {
       console.warn("[memory] Postgres init failed:", err);
     }
   }
-  if (pgOk && osOk) {
-    const client = createOpenSearchClient();
-    const indexManager = new IndexManager(client);
-    const osMemories = new OpenSearchMemoriesStore(client, indexManager);
+  if (pgOk && qdrantOk) {
+    const client = createQdrantClient();
+    const collectionManager = new CollectionManager(client);
+    const vectorMemories = new QdrantMemoriesStore(client, collectionManager);
     return {
-      memories: new PostgresOpenSearchMemories(new MemoryMetadataDb(), osMemories),
+      memories: new PostgresQdrantMemories(new MemoryMetadataDb(), vectorMemories),
       memoryStores: new MemoryStoresDb(),
       recallLog: new RecallLogDb(),
       postgresConnected: true,
-      opensearchConnected: true
+      qdrantConnected: true
     };
   }
   const missing = [];
   if (!pgOk) missing.push("Postgres (DATABASE_URL)");
-  if (!osOk) missing.push("OpenSearch (OPENSEARCH_URL)");
+  if (!qdrantOk) missing.push("Qdrant (QDRANT_URL)");
   throw new Error(
-    `[memory] ${missing.join(" and ")} required \u2014 Postgres/Redis/RabbitMQ via docker compose; OpenSearch via OPENSEARCH_* in .env (AWS).`
+    `[memory] ${missing.join(" and ")} required - start docker compose (postgres, redis, rabbitmq, qdrant).`
   );
 }
 export {

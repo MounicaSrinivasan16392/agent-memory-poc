@@ -15,17 +15,11 @@ const config = {
     db: Number(process.env.REDIS_DB ?? 0),
     sessionTtlSeconds: Number(process.env.SESSION_TTL_SECONDS ?? 60 * 60 * 24 * 30)
   },
-  opensearch: {
-    /** AWS OpenSearch domain — not run locally in docker-compose */
-    node: process.env.OPENSEARCH_URL ?? "https://search-hub-data-engineering-yyusgsuukytwjsw3spb2r5fi54.aos.us-west-1.on.aws/",
-    username: process.env.OPENSEARCH_USERNAME || void 0,
-    password: process.env.OPENSEARCH_PASSWORD || void 0,
-    /** Prepended to every per-agent index, e.g. "fm_prod_" → fm_prod_{agentId}-memories */
-    indexPrefix: process.env.OPENSEARCH_INDEX_PREFIX ?? "",
-    /** Suffix for long-term memory index. Full name: {prefix}{agentId}{suffix} */
-    memoriesIndexSuffix: process.env.OPENSEARCH_MEMORIES_INDEX_SUFFIX ?? "-memories",
-    numberOfShards: Number(process.env.OPENSEARCH_NUMBER_OF_SHARDS ?? 1),
-    numberOfReplicas: Number(process.env.OPENSEARCH_NUMBER_OF_REPLICAS ?? 2)
+  qdrant: {
+    url: process.env.QDRANT_URL ?? "http://127.0.0.1:6333",
+    apiKey: process.env.QDRANT_API_KEY || void 0,
+    /** Prepended to every per-agent collection, e.g. "fm_prod_" → fm_prod_{agentId} */
+    collectionPrefix: process.env.QDRANT_COLLECTION_PREFIX ?? ""
   },
   rabbitmq: {
     url: process.env.RABBITMQ_URL ?? "amqp://guest:guest@127.0.0.1:5672",
@@ -40,10 +34,11 @@ const config = {
     model: process.env.EMBEDDING_MODEL ?? "text-embedding-3-large",
     dimensions: Number(process.env.EMBEDDING_DIMENSIONS ?? 3072)
   },
-  hybrid: {
-    bm25Weight: Number(process.env.HYBRID_BM25_WEIGHT ?? 0.5),
-    vectorWeight: Number(process.env.HYBRID_VECTOR_WEIGHT ?? 0.3),
-    importanceWeight: Number(process.env.HYBRID_IMPORTANCE_WEIGHT ?? 0.2)
+  /** Platform memory policy — single source of truth for all agents in this POC. */
+  memory: {
+    typesEnabled: ["semantic", "episodic", "experiential"],
+    retrievalK: Number(process.env.MEMORY_RETRIEVAL_K ?? 4),
+    summarizeTokenThreshold: Number(process.env.MEMORY_SUMMARIZE_TOKEN_THRESHOLD ?? 1000)
   }
 };
 export {

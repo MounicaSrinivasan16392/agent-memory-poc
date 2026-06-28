@@ -2,14 +2,14 @@
 
 Plain **JavaScript** port of `memory_ai_sdk` — same architecture, no TypeScript.
 
-Working memory lives in **Redis**. Long-term memory splits **Postgres** (metadata + agent policy) and **OpenSearch** (content + vectors). Async LLM jobs run on **RabbitMQ**.
+Working memory lives in **Redis**. Long-term memory splits **Postgres** (metadata + agent policy) and **Qdrant** (content + vectors, one collection per agent). Async LLM jobs run on **RabbitMQ**.
 
 ## Stack
 
 ```
 Chat LLM + AI SDK tools (clients/js)
     → gRPC memory-api (src/grpc/server.js)
-    → Redis working memory + Postgres/OpenSearch long-term memory
+    → Redis working memory + Postgres/Qdrant long-term memory
     → RabbitMQ → worker (summarize, session_end)
 ```
 
@@ -17,7 +17,7 @@ Chat LLM + AI SDK tools (clients/js)
 
 ```bash
 cd agent_memory_poc
-cp .env.example .env   # then set OPENAI_API_KEY and OPENSEARCH_*
+cp .env.example .env   # then set OPENAI_API_KEY
 npm install
 npm run docker:up
 npm run register:demo    # once — creates memory_stores row + memory_code
@@ -40,7 +40,7 @@ Developer/Agent Memory/
 |-------|---------|-------------------|
 | **Turn** | `AppendTurn` after each chat reply | Redis `recent`, `turn_count`, `last_prompt_tokens` |
 | **Summarize** | `lastPromptTokens >= summarize_token_threshold` (default **1000**) | Redis `summary` (worker compresses `recent` into rolling prose) |
-| **Session end** | `EndSession` button / tool | Postgres `memory_metadata` + OpenSearch content (semantic profile + episodic) |
+| **Session end** | `EndSession` button / tool | Postgres `memory_metadata` + Qdrant content (semantic profile + episodic) |
 
 **Semantic profile** is per `(agent_id, user_id)` — written only at **session end**, not during chat or summarize. The chat UI **Semantic profile** panel loads it via `Search` (empty query).
 
@@ -51,7 +51,7 @@ Developer/Agent Memory/
 | `Assemble` | Redis session + long-term hits → `context_block` for the LLM |
 | `GetSession` | Redis snapshot (summary, recent, turn count) |
 | `AppendTurn` | Persist one turn; may queue `memory.summarize` |
-| `Search` | Semantic profile + hybrid episodic/experiential search |
+| `Search` | Semantic profile + vector episodic/experiential search |
 | `EndSession` | Queue `memory.session_end` consolidation |
 | `RegisterAgent` | Ensure store + generate `memory_code` |
 
@@ -62,7 +62,7 @@ Agents integrate via `clients/js/memory-client.js` — do not import `src/` inte
 | Panel | Source |
 |-------|--------|
 | **Turns / summary** | Redis (`GetSession`) |
-| **Semantic profile** | Postgres + OpenSearch (`Search`, scoped by user) |
+| **Semantic profile** | Postgres + Qdrant (`Search`, scoped by user) |
 | **Memories matched** | Last `recall_memory` assemble result |
 | **Injected context** | `context_block` from assemble |
 
@@ -73,29 +73,56 @@ Agents integrate via `clients/js/memory-client.js` — do not import `src/` inte
 | `src/index.js` | Platform bootstrap (`createMemoryPlatform`) |
 | `src/grpc/server.js` | gRPC MemoryAPI |
 | `src/controller/*` | Assemble, append, summarize, session_end |
-| `src/stores/*` | Redis session + Postgres/OpenSearch memories |
+| `src/stores/*` | Redis session + Postgres/Qdrant memories |
 | `src/worker/*` | RabbitMQ job handlers |
 | `src/llm/*` | Memory LLM calls (summarize, session_end, memory_code generation) |
 | `src/postgres/*` | Schema, metadata, agent stores |
-| `src/opensearch/*` | Index management + hybrid search |
+| `src/qdrant/*` | Collection management + vector search |
 | `clients/js/*` | AI SDK tools + chat demo |
 | `proto/memory.proto` | gRPC contract |
 | `scripts/register-demo-agent.js` | One-shot demo agent registration |
 
-## Data model: where things live
+## Prompts (`src/prompts/`)
 
-Long-term memory uses a **split store**: Postgres holds config and index metadata; OpenSearch holds searchable **content** (and embeddings). Redis holds **working memory** for the active conversation only.
+Three **input** templates plus one **generated** mirror per agent:
+
+| File | Layer | When used |
+|------|-------|-----------|
+| `platform.memory.system.md` | Platform | Every summarize + session_end job (system message) |
+| `generate_agent_memory.md` | Platform | Registration only — instructs LLM how to write memory_code |
+| `demo_sales_agent_prompt.md` | Agent | Registration only — source system prompt for demo agent |
+| `memory_code/{agentId}.md` | Agent | **Written on register** — mirror of Postgres `memory_code` (for review in git) |
+
+**`memory_code` ≠ `platform.memory.system.md`**
+
+- **Platform prompt** — shared rules: JSON schemas, “semantic only on session_end”, etc.
+- **memory_code** — per-agent policy: what facts to keep, how to summarize CRM/sales context, etc.
+
+At runtime the memory LLM receives both:
 
 ```
-Redis (session)          Postgres (config + metadata)     OpenSearch (content + vectors)
+system: platform.memory.system.md
+user:   TASK: summarize | session_end
+        AGENT_MEMORY_CODE: <from Postgres>
+        INPUT: <session data>
+```
+
+Runtime loads `memory_code` from **Postgres** (`memory_stores.memory_code`). The `.md` file under `memory_code/` is updated whenever you run `npm run register:demo`.
+
+## Data model: where things live
+
+Long-term memory uses a **split store**: Postgres holds config and index metadata; Qdrant holds searchable **content** (and embeddings), one **collection per agent**. Redis holds **working memory** for the active conversation only.
+
+```
+Redis (session)          Postgres (config + metadata)     Qdrant (content + vectors)
 ─────────────────        ────────────────────────────     ────────────────────────────
-summary, recent turns    memory_stores (per agent)        {agentId}-memories index
+summary, recent turns    memory_stores (per agent)        {prefix}{agentId} collection
 turn_count               memory_types (global catalog)      content, embedding
-last_prompt_tokens       memory_metadata (per memory)       BM25 + kNN search
+last_prompt_tokens       memory_metadata (per memory)       vector + payload filters
                          memory_recall_log (audit)
 ```
 
-### Redis — working memory (not Postgres/OpenSearch)
+### Redis — working memory (not Postgres/Qdrant)
 
 Per `conversation_id`, short-lived session state:
 
@@ -141,7 +168,7 @@ Agent-level policy and the generated **`memory_code`** (LLM extraction rules for
 
 ### `memory_metadata` — index row per long-term memory (Postgres only)
 
-**No content text here** — only a pointer to OpenSearch (`opensearch_doc_id`).
+**No content text here** — `id` is the Qdrant point id (content + vectors live in Qdrant).
 
 **Semantic** uses profile mode: one active row per `(agent, user, semantic)`.  
 **Episodic / experiential** get a new row per session-end write (deduped by `source_message_id`).
@@ -150,11 +177,11 @@ Written at **session end** only.
 
 ---
 
-### OpenSearch documents — content + embeddings
+### Qdrant points — content + embeddings
 
-Index: `{OPENSEARCH_INDEX_PREFIX}{agentId}{-memories}`.
+Collection: `{QDRANT_COLLECTION_PREFIX}{agentId}` (created on first write).
 
-Hybrid **BM25 + kNN** for episodic/experiential. Semantic profile content is read by id; it is **always included** in assemble/search when it exists (keyword score used for ranking only).
+Vector similarity search for episodic/experiential. Semantic profile content is read by id; it is **always included** in assemble/search when it exists (keyword score used for ranking only).
 
 ---
 
@@ -164,10 +191,10 @@ Hybrid **BM25 + kNN** for episodic/experiential. Semantic profile content is rea
 EndSession → worker (memory.session_end)
   → LLM returns semantic_profile + episodic (+ optional experiential)
   → Postgres: upsert memory_metadata row(s)
-  → OpenSearch: index document with content (+ embedding for episodic/experiential)
+  → Qdrant: upsert point with content (+ embedding for episodic/experiential)
 ```
 
-Assemble joins Postgres metadata + OpenSearch content + Redis session into `context_block`.
+Assemble joins Postgres metadata + Qdrant content + Redis session into `context_block`.
 
 ## Environment variables
 
@@ -178,9 +205,9 @@ Assemble joins Postgres metadata + OpenSearch content + Redis session into `cont
 | `RABBITMQ_URL` | `amqp://guest:guest@127.0.0.1:5672` | Async jobs |
 | `GRPC_PORT` | `50052` | memory-api listen port |
 | `OPENAI_API_KEY` | — | Required for LLM + embeddings |
-| `OPENSEARCH_URL` | AWS domain in `.env` | Long-term content (not in docker-compose) |
+| `QDRANT_URL` | `http://127.0.0.1:6333` | Long-term content (docker-compose) |
 
-Summarize threshold: `summarize_token_threshold` in `memory_stores.specification` or `clients/js` `DEFAULT_MEMORY_CONFIG` (default **1000**). Chat demo passes **total** input tokens across all LLM steps (`totalUsage`), not just the final step.
+Summarize threshold: `MEMORY_SUMMARIZE_TOKEN_THRESHOLD` in `.env` / `src/config.js` (default **1000**). Chat demo passes **total** input tokens across all LLM steps (`totalUsage`), not just the final step.
 
 ## Dev UIs
 
@@ -216,3 +243,61 @@ Default: `guest` / `guest`
 - All `src/**/*.js` — transpiled from TS with esbuild, type imports stripped
 - No `tsx`, `tsc`, or `types.ts`
 - Per-turn observe / Upsert / skills removed — semantic writes are **session_end only**
+
+Architecture : 
+
+chat-ui/
+├── index.html
+├── style.css
+└── app.js
+        ↑
+        │ Browser
+        │
+        ▼
+chat-demo.js
+(Node HTTP Server)
+        │
+        ▼
+AI SDK
+        │
+        ▼
+Memory Client (gRPC)
+        │
+        ▼
+Memory API
+        │
+        ▼
+RabbitMQ
+        │
+        ▼
+Worker
+
+
+
+
+Browser (chat-ui/app.js)
+    │  HTTP POST /api/chat
+    ▼
+chat-demo.js (handleChat)
+    │
+    ├─► OpenAI generateText({ tools })
+    │       │
+    │       │  LLM decides to call a tool (e.g. recall_memory)
+    │       ▼
+    │   memory-tools.js  (tool execute functions)
+    │       │
+    │       ▼
+    │   memory-client.js  (MemoryClient.assemble / search / …)
+    │       │
+    │       ▼ gRPC TCP :50052
+    │   grpc/server.js  (Assemble, Search, … handlers)
+    │       │
+    │       ▼
+    │   src/controller/*  (ContextAssembler, MemoryService, …)
+    │       │
+    │       ├─► Redis / Postgres / Qdrant
+    │       └─► RabbitMQ (AppendTurn / EndSession only, async jobs)
+    │
+    └─► memory.appendTurn() DIRECTLY (after generateText — not via tool today)
+            │
+            └── same path: memory-client → gRPC → server → Redis (+ maybe RabbitMQ summarize)

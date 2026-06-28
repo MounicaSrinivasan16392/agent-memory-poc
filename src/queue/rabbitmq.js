@@ -22,7 +22,7 @@ async function createJobPublisher() {
     };
   } catch (err) {
     throw new Error(
-      `[memory] RabbitMQ required at ${config.rabbitmq.url} \u2014 run docker compose up rabbitmq and npm run worker. ${err}`
+      `[memory] RabbitMQ required at ${config.rabbitmq.url} - run docker compose up rabbitmq and npm run worker. ${err}`
     );
   }
 }

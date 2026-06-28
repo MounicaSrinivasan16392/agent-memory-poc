@@ -33,14 +33,11 @@ async function main() {
     Assemble: (async (call, cb) => {
       try {
         const req = call.request;
-        const cfg = parseMemoryConfig(req["memory_config"]);
         const result = await platform.assembler.assemble({
           agentId: String(req["agent_id"]),
           userId: String(req["user_id"]),
           conversationId: String(req["conversation_id"]),
-          userQuery: String(req["user_query"] ?? ""),
-          incognito: Boolean(req["incognito"]),
-          memoryConfig: cfg
+          userQuery: String(req["user_query"] ?? "")
         });
         cb(null, {
           summary: result.summary ?? "",
@@ -79,7 +76,6 @@ async function main() {
       try {
         const req = call.request;
         const turnRaw = req["turn"];
-        const cfg = parseMemoryConfig(req["memory_config"]);
         const lastPromptTokens = Number(req["last_prompt_tokens"] ?? 0);
         const result = await platform.observeHandler.appendTurnSync({
           agentId: String(req["agent_id"]),
@@ -90,8 +86,6 @@ async function main() {
             user: String(turnRaw["user"]),
             assistant: String(turnRaw["assistant"])
           },
-          incognito: Boolean(req["incognito"]),
-          memoryConfig: cfg,
           lastPromptTokens
         });
         cb(null, {
@@ -103,7 +97,7 @@ async function main() {
         cb(err, null);
       }
     }),
-    /** Hybrid vector + keyword search over an agent's long-term memories for a user. Used by: admin tools, direct recall APIs. */
+    /** Vector search over episodic/experiential memories (semantic profile excluded). */
     Search: (async (call, cb) => {
       try {
         const req = call.request;
@@ -111,7 +105,7 @@ async function main() {
           String(req["agent_id"]),
           String(req["user_id"]),
           String(req["query"]),
-          { topK: Number(req["top_k"] ?? 6) }
+          { topK: Number(req["top_k"] ?? config.memory.retrievalK) }
         );
         cb(null, {
           results: results.map((m) => ({
@@ -125,16 +119,30 @@ async function main() {
         cb(err, null);
       }
     }),
+    /** Load the user's semantic profile — call at chat start, not via Search. */
+    GetSemanticProfile: (async (call, cb) => {
+      try {
+        const req = call.request;
+        const profile = await platform.memoryService.getSemanticProfile(
+          String(req["agent_id"]),
+          String(req["user_id"])
+        );
+        cb(null, {
+          memory_id: profile?.id ?? "",
+          content: profile?.content ?? ""
+        });
+      } catch (err) {
+        cb(err, null);
+      }
+    }),
     /** Schedule or run session-end consolidation (semantic reconcile + episodic write). Used by: clients/js/chat-demo.js EndSession. */
     EndSession: (async (call, cb) => {
       try {
         const req = call.request;
-        const cfg = parseMemoryConfig(req["memory_config"]);
         const payload = {
           agentId: String(req["agent_id"]),
           userId: String(req["user_id"]),
           conversationId: String(req["conversation_id"]),
-          memoryConfig: cfg,
           clearSession: req["clear_session"] !== false
         };
         if (publisher) {
@@ -158,9 +166,7 @@ async function main() {
         const req = call.request;
         const result = await platform.agentSetup.registerAgent({
           agentId: String(req["agent_id"]),
-          systemPrompt: String(req["system_prompt"] ?? ""),
-          typesEnabled: req["types_enabled"] ?? ["semantic", "episodic"],
-          experientialEnabled: Boolean(req["experiential_enabled"])
+          systemPrompt: String(req["system_prompt"] ?? "")
         });
         cb(null, {
           memory_code_generated: result.memoryCodeGenerated
@@ -173,18 +179,8 @@ async function main() {
   const addr = `${config.grpc.host}:${config.grpc.port}`;
   server.bindAsync(addr, grpc.ServerCredentials.createInsecure(), (err, port) => {
     if (err) throw err;
-    server.start();
     console.log(`[memory-api] gRPC listening on ${addr} (port ${port})`);
   });
-}
-function parseMemoryConfig(cfg) {
-  if (!cfg) return void 0;
-  return {
-    typesEnabled: cfg["types_enabled"] ?? ["semantic"],
-    experientialEnabled: Boolean(cfg["experiential_enabled"]),
-    retrievalK: Number(cfg["retrieval_k"] ?? 6),
-    summarizeTokenThreshold: Number(cfg["summarize_token_threshold"] ?? 1000)
-  };
 }
 main().catch((err) => {
   console.error(err);

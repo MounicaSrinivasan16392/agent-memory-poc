@@ -8,6 +8,7 @@ service MemoryAPI {
   rpc GetSession(GetSessionRequest) returns (SessionResponse);
   rpc AppendTurn(AppendTurnRequest) returns (AppendTurnResponse);
   rpc Search(SearchRequest) returns (SearchResponse);
+  rpc GetSemanticProfile(GetSemanticProfileRequest) returns (GetSemanticProfileResponse);
   rpc EndSession(EndSessionRequest) returns (EndSessionResponse);
   rpc RegisterAgent(RegisterAgentRequest) returns (RegisterAgentResponse);
 }
@@ -17,15 +18,6 @@ message AssembleRequest {
   string user_id = 2;
   string conversation_id = 3;
   string user_query = 4;
-  MemoryConfig memory_config = 5;
-  bool incognito = 6;
-}
-
-message MemoryConfig {
-  repeated string types_enabled = 1;
-  bool experiential_enabled = 2;
-  int32 retrieval_k = 3;
-  int32 summarize_token_threshold = 4;
 }
 
 message TurnRecord {
@@ -66,9 +58,7 @@ message AppendTurnRequest {
   string user_id = 2;
   string conversation_id = 3;
   TurnRecord turn = 4;
-  bool incognito = 5;
-  MemoryConfig memory_config = 6;
-  int32 last_prompt_tokens = 7;
+  int32 last_prompt_tokens = 5;
 }
 
 message AppendTurnResponse {
@@ -88,12 +78,21 @@ message SearchResponse {
   repeated MemoryHit results = 1;
 }
 
+message GetSemanticProfileRequest {
+  string agent_id = 1;
+  string user_id = 2;
+}
+
+message GetSemanticProfileResponse {
+  string memory_id = 1;
+  string content = 2;
+}
+
 message EndSessionRequest {
   string agent_id = 1;
   string user_id = 2;
   string conversation_id = 3;
-  MemoryConfig memory_config = 4;
-  bool clear_session = 5;
+  bool clear_session = 4;
 }
 
 message EndSessionResponse {
@@ -106,8 +105,6 @@ message EndSessionResponse {
 message RegisterAgentRequest {
   string agent_id = 1;
   string system_prompt = 2;
-  repeated string types_enabled = 3;
-  bool experiential_enabled = 4;
 }
 
 message RegisterAgentResponse {

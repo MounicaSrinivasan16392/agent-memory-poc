@@ -1,4 +1,4 @@
-/** OpenAI embedding helper for episodic/experiential hybrid search. */
+/** OpenAI embedding helper for episodic/experiential vector search. */
 import OpenAI from "openai";
 import { config } from "./config.js";
 let client = null;

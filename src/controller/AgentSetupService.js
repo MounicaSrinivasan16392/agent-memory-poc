@@ -1,15 +1,19 @@
 /**
- * Agent registration — ensures memory_stores row and generates memory_code.
+ * Agent registration — ensures memory_stores row, Qdrant collection, and memory_code.
  */
+import { config } from "../config.js";
 import { listRegisteredAgents, loadAgentPrompt, resolveAgentPrompt } from "../agents/agent-prompts.js";
+
 class AgentSetupService {
-  constructor(memoryStores, promptGenerator) {
+  constructor(memoryStores, promptGenerator, memories = null) {
     this.memoryStores = memoryStores;
     this.promptGenerator = promptGenerator;
+    this.memories = memories;
   }
   memoryStores;
   promptGenerator;
-  /** Register a single agent: ensure store + generate memory_code. */
+  memories;
+  /** Register a single agent: ensure Postgres store, Qdrant collection, and memory_code. */
   async registerAgent(input) {
     const systemPrompt = resolveAgentPrompt(input.agentId, input.systemPrompt);
     if (!systemPrompt) {
@@ -20,24 +24,22 @@ class AgentSetupService {
     if (this.memoryStores) {
       await this.memoryStores.ensureDefaultForAgent(input.agentId, systemPrompt);
     }
-    const typesEnabled = input.typesEnabled ?? ["semantic", "episodic"];
+    let collectionName = null;
+    if (this.memories) {
+      collectionName = await this.memories.ensureAgentCollection(input.agentId);
+    }
     await this.promptGenerator.generateMemoryCode({
       agentId: input.agentId,
       systemPrompt,
-      typesEnabled,
-      experientialEnabled: input.experientialEnabled ?? false
+      typesEnabled: config.memory.typesEnabled
     });
-    return { memoryCodeGenerated: true };
+    return { memoryCodeGenerated: true, collectionName };
   }
-  async registerAllFromRegistry(options) {
+  async registerAllFromRegistry() {
     for (const agentId of listRegisteredAgents()) {
       const systemPrompt = loadAgentPrompt(agentId);
       if (!systemPrompt) continue;
-      await this.registerAgent({
-        agentId,
-        systemPrompt,
-        experientialEnabled: options?.experientialEnabled
-      });
+      await this.registerAgent({ agentId, systemPrompt });
       console.log(`[setup] ${agentId} — memory_code ok`);
     }
   }

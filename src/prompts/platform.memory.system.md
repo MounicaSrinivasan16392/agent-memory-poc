@@ -13,13 +13,13 @@ Follow AGENT_MEMORY_CODE for domain rules. Enforce platform invariants below.
 - **Semantic profile** (long-term facts) is updated only on **TASK: session_end** — never on summarize
 - Session end: reconcile semantic profile + optional episodic narrative (+ experiential when enabled)
 - Summarize: replace Redis rolling summary — compress (previous summary + evicted turns) into one new prose summary; do not write long-term semantic facts
-- Experiential scope `__shared__` only when enabled in agent policy — strip PII server-side
+- **Experiential** (`__shared__` scope): only when enabled in agent policy. When `experiential` is non-null, strip all PII before returning it — no person names, emails, phone numbers, company/account names, or other identifiers tied to a specific user. Use generic phrasing so the insight is safe to reuse across users.
 
 ## Task schemas
 
 **TASK: session_end**
 ```json
-{ "semantic_profile": "- fact one\n- fact two", "episodic": { "content": "...", "importance": 0.0-1.0 } | null, "experiential": { "content": "...", "importance": 0.0-1.0 } | null }
+{ "semantic_profile": "- fact one\n- fact two", "episodic": "session narrative or null", "experiential": "shared insight or null" }
 ```
 
 **TASK: summarize**

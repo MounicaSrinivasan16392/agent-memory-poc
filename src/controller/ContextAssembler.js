@@ -1,8 +1,10 @@
 /**
- * Assemble Redis working memory + long-term hits into a context block for the LLM.
- * Always loads semantic profile (when present); episodic/experiential require a query.
+ * Assemble Redis working memory + long-term context for the LLM.
+ * Semantic profile is loaded separately; episodic/experiential come from vector search.
  */
+import { config } from "../config.js";
 import { formatContextBlock } from "../utils/context-block.js";
+
 class ContextAssembler {
   constructor(sessionStore, memoryService, recallLog = null) {
     this.sessionStore = sessionStore;
@@ -14,27 +16,29 @@ class ContextAssembler {
   recallLog;
   async assemble(input) {
     const start = Date.now();
-    if (input.incognito) {
-      return emptyResult(start);
-    }
-    const cfg = input.memoryConfig ?? await this.memoryService.getMemoryConfig(input.agentId);
-    const retrievalK = cfg.retrievalK ?? 6;
+    const { typesEnabled, retrievalK } = config.memory;
     const query = input.userQuery.trim();
-    const typesEnabled = cfg.typesEnabled ?? ["semantic", "episodic"];
-    const [session, memories] = await Promise.all([
+    const [session, semanticProfile, recalledMemories] = await Promise.all([
       this.sessionStore.getSession(input.conversationId),
-      this.memoryService.searchMemories(input.agentId, input.userId, query, {
-        topK: retrievalK,
-        types: typesEnabled,
-        includeShared: cfg.experientialEnabled
-      })
+      this.memoryService.getSemanticProfile(input.agentId, input.userId),
+      query
+        ? this.memoryService.searchMemories(input.agentId, input.userId, query, {
+            topK: retrievalK,
+            types: typesEnabled,
+            includeShared: typesEnabled.includes("experiential")
+          })
+        : Promise.resolve([])
     ]);
+
     const recent = session.recent;
+    const semanticContent = semanticProfile?.content?.trim() ?? "";
     const contextBlock = formatContextBlock({
       summary: session.summary,
       recent,
-      memories
+      semanticProfile: semanticContent,
+      memories: recalledMemories
     });
+
     const latencyMs = Date.now() - start;
     if (this.recallLog && query) {
       this.recallLog.append({
@@ -42,27 +46,20 @@ class ContextAssembler {
         userId: input.userId,
         conversationId: input.conversationId,
         userQuery: query,
-        memories,
+        memories: recalledMemories,
+        semanticProfile: semanticContent,
         latencyMs
       }).catch((err) => console.warn("[memory] recall log write failed:", err));
     }
     return {
       summary: session.summary,
       recent,
-      memories,
+      semanticProfile: semanticContent,
+      memories: recalledMemories,
       contextBlock,
       latencyMs
     };
   }
-}
-function emptyResult(start) {
-  return {
-    summary: null,
-    recent: [],
-    memories: [],
-    contextBlock: "",
-    latencyMs: Date.now() - start
-  };
 }
 export {
   ContextAssembler

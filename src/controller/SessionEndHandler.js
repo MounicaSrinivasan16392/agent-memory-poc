@@ -1,7 +1,9 @@
 /**
  * Session-end consolidation — LLM reconcile + long-term writes + optional Redis clear.
  */
+import { config } from "../config.js";
 import { consolidateSessionMemories } from "../llm/consolidate-session.js";
+
 class SessionEndHandler {
   /**
    * @param sessionStore Redis working memory store.
@@ -18,37 +20,43 @@ class SessionEndHandler {
   publisher;
   /**
    * Enqueue session_end consolidation or run inline when no publisher is wired.
-   * Chat and gRPC servers call this at conversation end so heavy LLM work stays
-   * off the request path when RabbitMQ is available.
-   *
-   * @param input Session-end payload with agent, user, conversation, and options.
-   * @returns Whether a background job was scheduled (false when run inline).
-   *
-   * Used by: clients/js end_session (via gRPC EndSession), grpc/server EndSession.
+   * Snapshots Redis session at schedule time so async workers are not affected by
+   * later summarize/clear races on the same conversation.
    */
   async scheduleSessionEnd(input) {
+    const session = await this.sessionStore.getSession(input.conversationId);
+    const payload = { ...input, sessionSnapshot: session };
     if (!this.publisher) {
-      await this.finalizeSession(input);
+      await this.finalizeSession(payload);
       return { scheduled: false };
     }
-    await this.publisher.publish("memory.session_end", input);
+    await this.publisher.publish("memory.session_end", payload);
     return { scheduled: true };
   }
   /**
    * Consolidate a full session into long-term memory and optionally clear Redis.
-   * Runs LLM consolidation against memory_code, writes semantic profile, episodic
-   * narrative, and experiential insight per agent memory config, then clears session.
-   *
-   * @param payload Session-end job payload with ids and optional memory config.
-   * @returns Flags indicating which memory types were written this run.
-   *
-   * Used by: worker/jobs/session_end, scheduleSessionEnd (inline), grpc/server, examples.
    */
   async finalizeSession(payload) {
-    const memoryConfig = payload.memoryConfig ?? await this.memoryService.getMemoryConfig(payload.agentId);
-    const session = await this.sessionStore.getSession(payload.conversationId);
+    const { typesEnabled } = config.memory;
+    const session = payload.sessionSnapshot
+      ?? await this.sessionStore.getSession(payload.conversationId);
+    const hasTurns = session.recent.length > 0;
+    const hasSummary = Boolean(session.summary?.trim());
     if (session.turnCount === 0) {
-      return { semanticUpdated: false, episodicWritten: false, experientialWritten: false };
+      return {
+        semanticUpdated: false,
+        episodicWritten: false,
+        experientialWritten: false,
+        skippedReason: "no turns in Redis session (chat first, then end session)"
+      };
+    }
+    if (!hasTurns && !hasSummary) {
+      return {
+        semanticUpdated: false,
+        episodicWritten: false,
+        experientialWritten: false,
+        skippedReason: `turn count ${session.turnCount} but no summary or recent turns to consolidate`
+      };
     }
     const [memoryCode, existingProfile] = await Promise.all([
       this.memoryService.getMemoryCode(payload.agentId),
@@ -57,11 +65,10 @@ class SessionEndHandler {
     const consolidation = await consolidateSessionMemories({
       memoryCode,
       existingSemanticProfile: existingProfile?.content ?? null,
-      session,
-      experientialEnabled: memoryConfig.experientialEnabled
+      session
     });
     let semanticUpdated = false;
-    if (memoryConfig.typesEnabled?.includes("semantic") !== false && consolidation.semanticProfile.trim()) {
+    if (typesEnabled.includes("semantic") && consolidation.semanticProfile.trim()) {
       await this.memoryService.setSemanticProfile(
         payload.agentId,
         payload.userId,
@@ -70,28 +77,35 @@ class SessionEndHandler {
       semanticUpdated = true;
     }
     let episodicWritten = false;
-    if (memoryConfig.typesEnabled?.includes("episodic") && consolidation.episodic?.content.trim()) {
+    if (typesEnabled.includes("episodic") && consolidation.episodic) {
       episodicWritten = await this.memoryService.writeEpisodicSession({
         agentId: payload.agentId,
         userId: payload.userId,
         conversationId: payload.conversationId,
-        content: consolidation.episodic.content,
-        importance: consolidation.episodic.importance
+        content: consolidation.episodic
       });
     }
     let experientialWritten = false;
-    if (memoryConfig.experientialEnabled && consolidation.experiential?.content.trim()) {
+    if (typesEnabled.includes("experiential") && consolidation.experiential) {
       experientialWritten = await this.memoryService.writeExperientialInsight({
         agentId: payload.agentId,
         conversationId: payload.conversationId,
-        content: consolidation.experiential.content,
-        importance: consolidation.experiential.importance
+        content: consolidation.experiential
       });
     }
-    if (payload.clearSession !== false) {
+    const wrote =
+      semanticUpdated || episodicWritten || experientialWritten;
+    if (wrote && payload.clearSession !== false) {
       await this.sessionStore.clearSession(payload.conversationId);
     }
-    return { semanticUpdated, episodicWritten, experientialWritten };
+    return {
+      semanticUpdated,
+      episodicWritten,
+      experientialWritten,
+      skippedReason: wrote
+        ? void 0
+        : "LLM returned no semantic/episodic/experiential content to persist"
+    };
   }
 }
 export {

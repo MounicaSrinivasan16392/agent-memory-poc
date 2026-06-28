@@ -5,7 +5,7 @@
 const $ = (id) => document.getElementById(id);
 
 const state = {
-  conversationId: crypto.randomUUID().replace(/-/g, '').slice(0, 24),
+  conversationId: crypto.randomUUID(),
 };
 
 function init() {
@@ -34,10 +34,14 @@ async function refreshState() {
   const q = new URLSearchParams(p);
   const r = await fetch(`/api/state?${q}`);
   const data = await r.json();
-  if (!r.ok) return;
+  if (!r.ok) {
+    $('profile').textContent = data.error ? `Error: ${data.error}` : 'Failed to load state';
+    return null;
+  }
   $('turn-count').textContent = String(data.session?.turnCount ?? 0);
   $('summary').textContent = data.session?.summary || '—';
   $('profile').textContent = semanticProfileText(data);
+  return data;
 }
 
 function params() {
@@ -64,8 +68,8 @@ function addMessage(role, text, meta) {
 
 function semanticProfileText(data) {
   if (data.semanticProfile) return data.semanticProfile;
-  const fromAssemble = data.assemble?.memories?.find((m) => m.type === 'semantic')?.content;
-  return fromAssemble || '—';
+  if (data.assemble?.semanticProfile) return data.assemble.semanticProfile;
+  return '—';
 }
 
 function renderSide(data) {
@@ -123,7 +127,7 @@ async function onSend(e) {
 }
 
 function newChat() {
-  state.conversationId = crypto.randomUUID().replace(/-/g, '').slice(0, 24);
+  state.conversationId = crypto.randomUUID();
   $('conv-id').value = state.conversationId;
   $('messages').innerHTML = '';
   $('turn-count').textContent = '0';
@@ -135,21 +139,48 @@ function newChat() {
 
 async function endSession() {
   if (!confirm('End session? Consolidates semantic profile + writes episodic memory.')) return;
+  const p = params();
+  $('profile').textContent = 'Consolidating…';
   try {
     const r = await fetch('/api/session/end', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...params(), clearSession: true }),
+      body: JSON.stringify({ ...p, clearSession: true }),
     });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error);
+
     addMessage('assistant', data.message || 'Session end job queued.');
-    setTimeout(refreshState, 3000);
-    setTimeout(refreshState, 8000);
+
+    if (data.semanticProfile) {
+      $('profile').textContent = data.semanticProfile;
+    } else {
+      await pollSemanticProfile(p);
+    }
+
     newChat();
   } catch (err) {
     alert(err.message);
+    await refreshState();
   }
+}
+
+/** Poll until session_end worker writes the semantic profile (or timeout). */
+async function pollSemanticProfile(p, { attempts = 15, intervalMs = 2000 } = {}) {
+  for (let i = 0; i < attempts; i++) {
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    const q = new URLSearchParams(p);
+    const r = await fetch(`/api/state?${q}`);
+    const data = await r.json();
+    if (!r.ok) continue;
+    const text = semanticProfileText(data);
+    if (text && text !== '—') {
+      $('profile').textContent = text;
+      return text;
+    }
+  }
+  $('profile').textContent = '— (consolidation still running or empty — check worker logs)';
+  return null;
 }
 
 init();

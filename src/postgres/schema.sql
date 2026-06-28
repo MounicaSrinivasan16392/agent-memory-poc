@@ -1,8 +1,8 @@
 -- FluentMind memory — Postgres schema
 --
 -- ROLE: Postgres holds **configuration + metadata only**. Memory **content** lives in
--- OpenSearch ({agentId}-memories index). Each memory_metadata row points to an
--- OpenSearch doc via opensearch_doc_id.
+-- Qdrant (one collection per agent). Each memory_metadata row points to a
+-- Qdrant point id matches memory_metadata.id.
 --
 -- MODEL:
 --   memory_types        — global catalog (semantic, episodic, experiential)
@@ -17,7 +17,7 @@
 
 -- ── memory_types (global catalog) ────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS memory_types (
-  id                VARCHAR(24) PRIMARY KEY,
+  id                VARCHAR(36) PRIMARY KEY,
   type_key          VARCHAR(64) UNIQUE NOT NULL,
   display_name      VARCHAR(255) NOT NULL,
   scope_mode        VARCHAR(32) NOT NULL DEFAULT 'user',
@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS memory_types (
 
 -- ── memory_stores ────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS memory_stores (
-  id                VARCHAR(24) PRIMARY KEY,
+  id                VARCHAR(36) PRIMARY KEY,
   agent_id          VARCHAR(255) UNIQUE NOT NULL,
   name              VARCHAR(255) NOT NULL,
   ref_name          VARCHAR(255) UNIQUE NOT NULL,
@@ -39,7 +39,6 @@ CREATE TABLE IF NOT EXISTS memory_stores (
   memory_code       TEXT,
   specification     JSONB NOT NULL DEFAULT '{
     "types_enabled": ["semantic", "episodic", "experiential"],
-    "experiential_enabled": true,
     "retrieval_k": 6,
     "summarize_token_threshold": 1000,
     "embed_model": "text-embedding-3-large"
@@ -51,19 +50,17 @@ CREATE TABLE IF NOT EXISTS memory_stores (
 -- ── memory_store_types ───────────────────────────────────────────────────────
 -- Links each agent store to catalog memory_types by id (all 3 for every agent).
 CREATE TABLE IF NOT EXISTS memory_store_types (
-  memory_store_id   VARCHAR(24) NOT NULL REFERENCES memory_stores(id) ON DELETE CASCADE,
-  memory_type_id    VARCHAR(24) NOT NULL REFERENCES memory_types(id) ON DELETE CASCADE,
+  memory_store_id   VARCHAR(36) NOT NULL REFERENCES memory_stores(id) ON DELETE CASCADE,
+  memory_type_id    VARCHAR(36) NOT NULL REFERENCES memory_types(id) ON DELETE CASCADE,
   PRIMARY KEY (memory_store_id, memory_type_id)
 );
 
 -- ── memory_metadata ──────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS memory_metadata (
-  id                VARCHAR(24) PRIMARY KEY,
+  id                VARCHAR(36) PRIMARY KEY,
   agent_id          VARCHAR(255) NOT NULL,
   memory_type_key   VARCHAR(64) NOT NULL,
   scope             VARCHAR(255) NOT NULL,
-  opensearch_doc_id VARCHAR(255) NOT NULL,
-  importance        REAL NOT NULL DEFAULT 0.5,
   source_message_id VARCHAR(255),
   is_deleted        BOOLEAN NOT NULL DEFAULT FALSE,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -80,7 +77,7 @@ CREATE INDEX IF NOT EXISTS idx_memory_metadata_agent_scope
 
 -- ── memory_recall_log ────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS memory_recall_log (
-  id                  VARCHAR(24) PRIMARY KEY,
+  id                  VARCHAR(36) PRIMARY KEY,
   agent_id            VARCHAR(255) NOT NULL,
   user_id             VARCHAR(255) NOT NULL,
   conversation_id     VARCHAR(255) NOT NULL,

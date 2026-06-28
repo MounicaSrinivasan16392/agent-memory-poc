@@ -12,7 +12,7 @@ Assistant: ${t.assistant}`).join("\n\n");
   const raw = await callMemoryLlm(
     "summarize",
     input.memoryCode,
-    `Compress into ONE replacement rolling summary. The previous summary below will be discarded \u2014 fold it and the evicted turns into a single new prose summary. Do not append as a separate section.
+    `Compress into ONE replacement rolling summary. The previous summary below will be discarded fold it and the evicted turns into a single new prose summary. Do not append as a separate section.
 
 Previous summary (replace entirely):
 ${input.previousSummary ?? "(none)"}

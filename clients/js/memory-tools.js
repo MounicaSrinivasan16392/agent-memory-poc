@@ -7,19 +7,16 @@
 import { tool } from 'ai';
 import { z } from 'zod';
 import crypto from 'crypto';
-import { DEFAULT_MEMORY_CONFIG } from './memory-client.js';
 
 function newTurnId() {
-  return crypto.randomUUID().replace(/-/g, '').slice(0, 24);
+  return crypto.randomUUID();
 }
 
 /**
  * @param {import('./memory-client.js').MemoryClient} memoryClient
- * @param {{ agentId: string, userId: string, conversationId: string, memoryConfig?: object }} ctx
+ * @param {{ agentId: string, userId: string, conversationId: string }} ctx
  */
 export function createMemoryTools(memoryClient, ctx) {
-  const memoryConfig = ctx.memoryConfig ?? DEFAULT_MEMORY_CONFIG;
-
   const recall_memory = tool({
     description:
       'Load session + long-term context for the user query via memory-api Assemble. Call before answering.',
@@ -32,7 +29,6 @@ export function createMemoryTools(memoryClient, ctx) {
         userId: ctx.userId,
         conversationId: ctx.conversationId,
         userQuery: query,
-        memoryConfig,
       });
       return {
         latencyMs: assembled.latencyMs,
@@ -49,7 +45,7 @@ export function createMemoryTools(memoryClient, ctx) {
   });
 
   const search_memories = tool({
-    description: 'Hybrid search over semantic and episodic long-term memories.',
+    description: 'Vector search over episodic and experiential long-term memories.',
     inputSchema: z.object({
       query: z.string(),
       topK: z.number().int().min(1).max(20).optional(),
@@ -80,7 +76,6 @@ export function createMemoryTools(memoryClient, ctx) {
         conversationId: ctx.conversationId,
         turn: { id: turnId, user: userMessage, assistant: assistantReply },
         lastPromptTokens: ctx.lastPromptTokens,
-        memoryConfig,
       });
       return {
         turnId,
@@ -101,7 +96,6 @@ export function createMemoryTools(memoryClient, ctx) {
         agentId: ctx.agentId,
         userId: ctx.userId,
         conversationId: ctx.conversationId,
-        memoryConfig,
         clearSession: clearSession !== false,
       });
       return {

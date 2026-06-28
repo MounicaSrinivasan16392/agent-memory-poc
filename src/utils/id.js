@@ -1,8 +1,10 @@
-/** 24-char hex ids for Postgres rows and OpenSearch document ids. */
-import { randomBytes } from "node:crypto";
+/** UUID ids for Postgres rows and Qdrant points (same value in both stores). */
+import { randomUUID } from "node:crypto";
+
 function newId() {
-  return randomBytes(12).toString("hex");
+  return randomUUID();
 }
+
 export {
   newId
 };

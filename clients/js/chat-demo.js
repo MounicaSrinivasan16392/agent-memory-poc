@@ -20,7 +20,6 @@ import { generateText, stepCountIs } from 'ai';
 import {
   createMemoryClient,
   createMemoryTools,
-  DEFAULT_MEMORY_CONFIG,
   inputTokensFromGenerateText,
 } from './index.js';
 
@@ -44,23 +43,23 @@ Be concise and friendly.`;
 let memory;
 
 function newId() {
-  return crypto.randomUUID().replace(/-/g, '').slice(0, 24);
+  return crypto.randomUUID();
 }
 
-/** Long-term semantic profile for agent + user (Postgres/OpenSearch). */
-async function loadSemanticProfile(agentId, userId, conversationId) {
-  const hits = await memory.search({ agentId, userId, query: '', topK: 6 });
-  const fromSearch = hits.find((m) => m.type === 'semantic')?.content;
-  if (fromSearch) return fromSearch;
-  if (!conversationId) return null;
-  const assembled = await memory.assemble({
-    agentId,
-    userId,
-    conversationId,
-    userQuery: '',
-    memoryConfig: DEFAULT_MEMORY_CONFIG,
-  });
-  return assembled.memories.find((m) => m.type === 'semantic')?.content ?? null;
+/** Long-term semantic profile for agent + user (loaded at chat start, not via search). */
+async function loadSemanticProfile(agentId, userId) {
+  const profile = await memory.getSemanticProfile({ agentId, userId });
+  return profile?.content ?? null;
+}
+
+async function waitForSemanticProfile(agentId, userId, before, { attempts = 15, intervalMs = 2000 } = {}) {
+  for (let i = 0; i < attempts; i++) {
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    const profile = await loadSemanticProfile(agentId, userId);
+    if (!profile) continue;
+    if (!before || profile !== before) return profile;
+  }
+  return loadSemanticProfile(agentId, userId);
 }
 
 async function handleChat(body) {
@@ -71,13 +70,17 @@ async function handleChat(body) {
     agentId,
     userId,
     conversationId,
-    memoryConfig: DEFAULT_MEMORY_CONFIG,
   };
   const tools = createMemoryTools(memory, toolCtx);
 
+  const semanticProfile = await loadSemanticProfile(agentId, userId);
+  const system = semanticProfile
+    ? `${SYSTEM_PROMPT}\n\n## User profile (long-term)\n${semanticProfile}`
+    : SYSTEM_PROMPT;
+
   const result = await generateText({
     model: openai(OPENAI_MODEL),
-    system: SYSTEM_PROMPT,
+    system,
     prompt: message,
     tools,
     stopWhen: stepCountIs(6),
@@ -91,7 +94,6 @@ async function handleChat(body) {
     conversationId,
     turn: { id: turnId, user: message, assistant: result.text || '' },
     lastPromptTokens: inputTokensFromGenerateText(result),
-    memoryConfig: DEFAULT_MEMORY_CONFIG,
   });
 
   const toolCalls = result.steps.flatMap((s) => s.toolCalls);
@@ -101,7 +103,6 @@ async function handleChat(body) {
   const recallResult = recallStep?.toolResults.find((r) => r.toolName === 'recall_memory');
 
   const sessionAfter = await memory.getSession(conversationId);
-  const semanticProfile = await loadSemanticProfile(agentId, userId, conversationId);
 
   const assembled = recallResult?.output;
 
@@ -197,7 +198,7 @@ async function main() {
         const conversationId = q.get('conversationId') ?? '';
         const [session, semanticProfile] = await Promise.all([
           conversationId ? memory.getSession(conversationId) : Promise.resolve(null),
-          loadSemanticProfile(agentId, userId, conversationId),
+          loadSemanticProfile(agentId, userId),
         ]);
         json(res, 200, { session, semanticProfile });
         return;
@@ -217,16 +218,24 @@ async function main() {
 
       if (req.method === 'POST' && route === '/api/session/end') {
         const body = await readJson(req);
+        const agentId = String(body.agentId ?? 'demo_sales_agent');
+        const userId = String(body.userId ?? 'user_alice');
+        const beforeProfile = await loadSemanticProfile(agentId, userId);
         const result = await memory.endSession({
-          agentId: String(body.agentId ?? 'demo_sales_agent'),
-          userId: String(body.userId ?? 'user_alice'),
+          agentId,
+          userId,
           conversationId: String(body.conversationId),
-          memoryConfig: DEFAULT_MEMORY_CONFIG,
           clearSession: body.clearSession !== false,
         });
+        const semanticProfile = result.scheduled
+          ? await waitForSemanticProfile(agentId, userId, beforeProfile)
+          : await loadSemanticProfile(agentId, userId);
         json(res, 200, {
           scheduled: result.scheduled,
-          message: 'memory.session_end job published — worker will consolidate',
+          semanticProfile,
+          message: semanticProfile
+            ? 'Session consolidated — semantic profile updated.'
+            : 'memory.session_end job published — worker will consolidate (profile not ready yet)',
         });
         return;
       }
