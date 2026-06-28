@@ -1,8 +1,7 @@
 -- FluentMind memory — Postgres schema
 --
 -- ROLE: Postgres holds **configuration + metadata only**. Memory **content** lives in
--- Qdrant (one collection per agent). Each memory_metadata row points to a
--- Qdrant point id matches memory_metadata.id.
+-- Qdrant (one collection per agent). memory_metadata.id = Qdrant point id.
 --
 -- MODEL:
 --   memory_types        — global catalog (semantic, episodic, experiential)
@@ -11,8 +10,8 @@
 --   memory_metadata     — durable index metadata for long-term memories
 --   memory_recall_log   — assemble audit trail
 --
--- Applied on startup by: src/postgres/client.ts → initPostgres()
--- Reset DB during testing: drop volume and re-run docker:up
+-- Applied on startup by: src/postgres/client.js → initPostgres()
+-- Reset DB during testing: drop volume and re-run docker compose up
 -- ─────────────────────────────────────────────────────────────────────────────
 
 -- ── memory_types (global catalog) ────────────────────────────────────────────
@@ -30,6 +29,7 @@ CREATE TABLE IF NOT EXISTS memory_types (
 );
 
 -- ── memory_stores ────────────────────────────────────────────────────────────
+-- Per-agent policy: memory_code (LLM extraction rules) + specification JSON.
 CREATE TABLE IF NOT EXISTS memory_stores (
   id                VARCHAR(36) PRIMARY KEY,
   agent_id          VARCHAR(255) UNIQUE NOT NULL,
@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS memory_stores (
   memory_code       TEXT,
   specification     JSONB NOT NULL DEFAULT '{
     "types_enabled": ["semantic", "episodic", "experiential"],
-    "retrieval_k": 6,
+    "retrieval_k": 4,
     "summarize_token_threshold": 1000,
     "embed_model": "text-embedding-3-large"
   }'::jsonb,
@@ -56,17 +56,20 @@ CREATE TABLE IF NOT EXISTS memory_store_types (
 );
 
 -- ── memory_metadata ──────────────────────────────────────────────────────────
+-- Index rows only — content text is stored in Qdrant at the same id.
 CREATE TABLE IF NOT EXISTS memory_metadata (
   id                VARCHAR(36) PRIMARY KEY,
   agent_id          VARCHAR(255) NOT NULL,
   memory_type_key   VARCHAR(64) NOT NULL,
   scope             VARCHAR(255) NOT NULL,
+  -- Idempotency key for session-end writes (e.g. session_end:{conversationId})
   source_message_id VARCHAR(255),
   is_deleted        BOOLEAN NOT NULL DEFAULT FALSE,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- One active row per (source_message_id, memory_type_key) — retries update same point
 CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_metadata_idempotency
   ON memory_metadata (source_message_id, memory_type_key)
   WHERE source_message_id IS NOT NULL AND is_deleted = FALSE;
@@ -76,6 +79,7 @@ CREATE INDEX IF NOT EXISTS idx_memory_metadata_agent_scope
   WHERE is_deleted = FALSE;
 
 -- ── memory_recall_log ────────────────────────────────────────────────────────
+-- Audit: which memories were injected during Assemble for each user query.
 CREATE TABLE IF NOT EXISTS memory_recall_log (
   id                  VARCHAR(36) PRIMARY KEY,
   agent_id            VARCHAR(255) NOT NULL,

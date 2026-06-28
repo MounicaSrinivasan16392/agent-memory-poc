@@ -1,27 +1,39 @@
-/** Postgres connection pool, schema bootstrap, and health probe. */
+/**
+ * Postgres connection pool, schema bootstrap, and health probe.
+ *
+ * initPostgres() applies schema.sql idempotently on platform startup.
+ */
 import pg from "pg";
 import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { config } from "../config.js";
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 let pool = null;
+
+/** Lazy singleton pool — shared by PostgresStore. */
 function getPool() {
   if (!pool) {
     pool = new pg.Pool({ connectionString: config.postgres.url });
   }
   return pool;
 }
+
+/** Apply schema.sql (CREATE TABLE IF NOT EXISTS). Safe to run on every startup. */
 async function initPostgres() {
   const schema = readFileSync(join(__dirname, "schema.sql"), "utf8");
   await getPool().query(schema);
 }
+
 async function closePostgres() {
   if (pool) {
     await pool.end();
     pool = null;
   }
 }
+
+/** One-shot connectivity check before platform bootstrap. */
 async function probePostgres() {
   try {
     const client = new pg.Client({ connectionString: config.postgres.url });
@@ -33,6 +45,7 @@ async function probePostgres() {
     return false;
   }
 }
+
 export {
   closePostgres,
   getPool,

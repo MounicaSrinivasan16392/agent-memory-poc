@@ -1,13 +1,21 @@
 /**
- * Redis summarize worker logic — folds recent turns into session:summary via LLM.
+ * Redis summarize worker logic.
+ *
+ * When prompt tokens exceed MEMORY_SUMMARIZE_TOKEN_THRESHOLD, recent turns are
+ * evicted from Redis and folded into session:summary via the summarize LLM task.
  */
 import { summarizeSessionWithLlm } from "../llm/summarize-session.js";
+
 class SummarizeHandler {
   constructor(sessionStore) {
     this.sessionStore = sessionStore;
   }
   sessionStore;
-  
+
+  /**
+   * Fold all current recent turns into summary; clear recent and reset token counter.
+   * @returns {{ updated: boolean, summary: string | null }}
+   */
   async summarize(input) {
     const session = await this.sessionStore.getSession(input.conversationId);
     const evicted = session.recent;
@@ -28,6 +36,7 @@ class SummarizeHandler {
     return { updated: true, summary: newSummary };
   }
 }
+
 export {
   SummarizeHandler
 };

@@ -1,4 +1,9 @@
-/** RabbitMQ handler for memory.session_end — write semantic profile + episodic to long-term store. */
+/**
+ * RabbitMQ job handler: memory.session_end
+ *
+ * Uses sessionSnapshot from the API (if present) to avoid Redis race with clear/summarize.
+ * Writes semantic profile + episodic + experiential to long-term stores.
+ */
 async function handleSessionEnd(platform, payload) {
   const job = payload;
   const snap = job.sessionSnapshot;
@@ -13,6 +18,7 @@ async function handleSessionEnd(platform, payload) {
   }
   console.log(`[memory.session_end] ${job.conversationId} (${detail}) ${flags}`);
 }
+
 export {
   handleSessionEnd
 };

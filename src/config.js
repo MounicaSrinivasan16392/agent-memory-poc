@@ -1,5 +1,11 @@
-/** Runtime configuration from environment variables (.env). */
+/**
+ * Runtime configuration from environment variables (.env).
+ *
+ * Platform memory policy (typesEnabled, retrievalK, thresholds) lives here —
+ * per-agent overrides would come from memory_stores.specification in a future version.
+ */
 import "dotenv/config";
+
 const config = {
   grpc: {
     host: process.env.GRPC_HOST ?? "0.0.0.0",
@@ -34,13 +40,15 @@ const config = {
     model: process.env.EMBEDDING_MODEL ?? "text-embedding-3-large",
     dimensions: Number(process.env.EMBEDDING_DIMENSIONS ?? 3072)
   },
-  /** Platform memory policy — single source of truth for all agents in this POC. */
   memory: {
     typesEnabled: ["semantic", "episodic", "experiential"],
     retrievalK: Number(process.env.MEMORY_RETRIEVAL_K ?? 4),
-    summarizeTokenThreshold: Number(process.env.MEMORY_SUMMARIZE_TOKEN_THRESHOLD ?? 1000)
+    summarizeTokenThreshold: Number(process.env.MEMORY_SUMMARIZE_TOKEN_THRESHOLD ?? 1000),
+    /** Max chars per long-term memory field at write time (semantic, episodic, experiential). */
+    maxContentChars: Number(process.env.MEMORY_MAX_CONTENT_CHARS ?? 6000)
   }
 };
+
 export {
   config
 };

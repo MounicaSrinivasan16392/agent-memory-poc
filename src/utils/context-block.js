@@ -1,4 +1,8 @@
-/** Formats assemble output into markdown sections for LLM context injection. */
+/**
+ * Formats ContextAssembler output into markdown sections for LLM injection.
+ *
+ * Section order: session summary → recent turns → semantic profile → recalled memories.
+ */
 function formatContextBlock(input) {
   const sections = [];
   if (input.summary) {
@@ -24,6 +28,7 @@ function formatContextBlock(input) {
   }
   return sections.join("\n\n").trim();
 }
+
 export {
   formatContextBlock
 };

@@ -1,13 +1,18 @@
-/** LLM synthesis of agent memory_code from system prompt + enabled types. */
+/**
+ * LLM synthesis of agent memory_code from system prompt + enabled memory types.
+ *
+ * Output is stored in memory_stores.memory_code and mirrored to
+ * src/prompts/memory_code/{agentId}.md for version control.
+ */
 import OpenAI from "openai";
 import { config } from "../config.js";
 import { loadPlatformPrompt } from "./load-prompt.js";
 
 async function generateAgentMemoryCode(input) {
   const client = new OpenAI({ apiKey: config.openai.apiKey });
-  const wrapper = loadPlatformPrompt("generate_agent_memory.md");
+  const wrapper = loadPlatformPrompt("generate_agent_memory_code.md");
   const context = JSON.stringify({
-    system_prompt: input.systemPrompt.slice(0, 4e3),
+    system_prompt: input.systemPrompt,
     types_enabled: input.typesEnabled
   });
   const response = await client.chat.completions.create({
@@ -24,6 +29,7 @@ async function generateAgentMemoryCode(input) {
   }
   return content;
 }
+
 export {
   generateAgentMemoryCode
 };

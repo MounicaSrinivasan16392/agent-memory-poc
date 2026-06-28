@@ -42,16 +42,17 @@ Developer/Agent Memory/
 | **Summarize** | `lastPromptTokens >= summarize_token_threshold` (default **1000**) | Redis `summary` (worker compresses `recent` into rolling prose) |
 | **Session end** | `EndSession` button / tool | Postgres `memory_metadata` + Qdrant content (semantic profile + episodic) |
 
-**Semantic profile** is per `(agent_id, user_id)` — written only at **session end**, not during chat or summarize. The chat UI **Semantic profile** panel loads it via `Search` (empty query).
+**Semantic profile** is per `(agent_id, user_id)` — written only at **session end**, not during chat or summarize. The chat UI loads it via **`GetSemanticProfile`** at session start (not vector search).
 
 ## gRPC surface (`proto/memory.proto`)
 
 | RPC | Purpose |
 |-----|---------|
-| `Assemble` | Redis session + long-term hits → `context_block` for the LLM |
+| `Assemble` | Redis session + semantic profile + vector recall → `context_block` |
 | `GetSession` | Redis snapshot (summary, recent, turn count) |
 | `AppendTurn` | Persist one turn; may queue `memory.summarize` |
-| `Search` | Semantic profile + vector episodic/experiential search |
+| `GetSemanticProfile` | Load long-term semantic profile for agent + user |
+| `Search` | Vector search over episodic/experiential only (semantic excluded) |
 | `EndSession` | Queue `memory.session_end` consolidation |
 | `RegisterAgent` | Ensure store + generate `memory_code` |
 
@@ -62,9 +63,30 @@ Agents integrate via `clients/js/memory-client.js` — do not import `src/` inte
 | Panel | Source |
 |-------|--------|
 | **Turns / summary** | Redis (`GetSession`) |
-| **Semantic profile** | Postgres + Qdrant (`Search`, scoped by user) |
-| **Memories matched** | Last `recall_memory` assemble result |
+| **Semantic profile** | `GetSemanticProfile` (Postgres metadata + Qdrant content) |
+| **Memories matched** | Last `recall_memory` assemble result (episodic/experiential vector hits) |
 | **Injected context** | `context_block` from assemble |
+
+## Store layer (`src/stores/`)
+
+Three store classes — one per backend. **`MemoryService`** coordinates Postgres + Qdrant for long-term memory; handlers never call stores directly except via `MemoryService` or `RedisStore`.
+
+| Class | Backend | Responsibility |
+|-------|---------|----------------|
+| `RedisStore` | Redis | Working memory: summary, recent turns, token counters |
+| `PostgresStore` | Postgres | All SQL: `memory_metadata`, `memory_stores`, `memory_recall_log`, `memory_types` seeding |
+| `QdrantStore` | Qdrant | Collections, point upsert/retrieve, vector search |
+
+**Trace path (session end → episodic write):**
+
+```
+SessionEndHandler → MemoryService.writeEpisodicSession
+  → postgres.getMemoryBySourceMessageId / insertMemoryMetadata
+  → embedText(...)
+  → qdrant.upsertPoint(...)
+```
+
+Infrastructure only (pool / client factory): `src/postgres/client.js`, `src/qdrant/client.js`.
 
 ## Layout
 
@@ -72,12 +94,15 @@ Agents integrate via `clients/js/memory-client.js` — do not import `src/` inte
 |------|------|
 | `src/index.js` | Platform bootstrap (`createMemoryPlatform`) |
 | `src/grpc/server.js` | gRPC MemoryAPI |
-| `src/controller/*` | Assemble, append, summarize, session_end |
-| `src/stores/*` | Redis session + Postgres/Qdrant memories |
+| `src/controller/*` | Handlers + `MemoryService` (business logic, dual-write coordination) |
+| `src/stores/RedisStore.js` | Redis session store |
+| `src/stores/PostgresStore.js` | All Postgres access |
+| `src/stores/QdrantStore.js` | All Qdrant access |
+| `src/postgres/client.js` | Connection pool, schema bootstrap |
+| `src/postgres/schema.sql` | Postgres DDL |
+| `src/qdrant/client.js` | Qdrant client factory + probe |
 | `src/worker/*` | RabbitMQ job handlers |
 | `src/llm/*` | Memory LLM calls (summarize, session_end, memory_code generation) |
-| `src/postgres/*` | Schema, metadata, agent stores |
-| `src/qdrant/*` | Collection management + vector search |
 | `clients/js/*` | AI SDK tools + chat demo |
 | `proto/memory.proto` | gRPC contract |
 | `scripts/register-demo-agent.js` | One-shot demo agent registration |
@@ -89,7 +114,7 @@ Three **input** templates plus one **generated** mirror per agent:
 | File | Layer | When used |
 |------|-------|-----------|
 | `platform.memory.system.md` | Platform | Every summarize + session_end job (system message) |
-| `generate_agent_memory.md` | Platform | Registration only — instructs LLM how to write memory_code |
+| `generate_agent_memory_code.md` | Platform | Registration only — instructs LLM how to write memory_code |
 | `demo_sales_agent_prompt.md` | Agent | Registration only — source system prompt for demo agent |
 | `memory_code/{agentId}.md` | Agent | **Written on register** — mirror of Postgres `memory_code` (for review in git) |
 
@@ -181,7 +206,7 @@ Written at **session end** only.
 
 Collection: `{QDRANT_COLLECTION_PREFIX}{agentId}` (created on first write).
 
-Vector similarity search for episodic/experiential. Semantic profile content is read by id; it is **always included** in assemble/search when it exists (keyword score used for ranking only).
+Vector similarity search for **episodic/experiential** only. Semantic profile content is read by point id via `GetSemanticProfile` (zero vector in Qdrant; not included in vector search).
 
 ---
 
@@ -190,11 +215,12 @@ Vector similarity search for episodic/experiential. Semantic profile content is 
 ```
 EndSession → worker (memory.session_end)
   → LLM returns semantic_profile + episodic (+ optional experiential)
-  → Postgres: upsert memory_metadata row(s)
-  → Qdrant: upsert point with content (+ embedding for episodic/experiential)
+  → MemoryService coordinates:
+      postgres: upsert memory_metadata row(s)
+      qdrant:   upsert point with content (+ embedding for episodic/experiential)
 ```
 
-Assemble joins Postgres metadata + Qdrant content + Redis session into `context_block`.
+Assemble loads semantic profile separately, then Redis session + vector recall into `context_block`.
 
 ## Environment variables
 
@@ -206,8 +232,11 @@ Assemble joins Postgres metadata + Qdrant content + Redis session into `context_
 | `GRPC_PORT` | `50052` | memory-api listen port |
 | `OPENAI_API_KEY` | — | Required for LLM + embeddings |
 | `QDRANT_URL` | `http://127.0.0.1:6333` | Long-term content (docker-compose) |
+| `MEMORY_RETRIEVAL_K` | `4` | Vector recall top-K in assemble/search |
+| `MEMORY_SUMMARIZE_TOKEN_THRESHOLD` | `1000` | Queue summarize when prompt tokens exceed this |
+| `MEMORY_MAX_CONTENT_CHARS` | `6000` | Max chars per semantic/episodic/experiential field at write time |
 
-Summarize threshold: `MEMORY_SUMMARIZE_TOKEN_THRESHOLD` in `.env` / `src/config.js` (default **1000**). Chat demo passes **total** input tokens across all LLM steps (`totalUsage`), not just the final step.
+Summarize threshold: chat demo passes **total** input tokens across all LLM steps (`totalUsage`), not just the final step.
 
 ## Dev UIs
 
@@ -244,60 +273,19 @@ Default: `guest` / `guest`
 - No `tsx`, `tsc`, or `types.ts`
 - Per-turn observe / Upsert / skills removed — semantic writes are **session_end only**
 
-Architecture : 
+## Request flow (chat demo)
 
-chat-ui/
-├── index.html
-├── style.css
-└── app.js
-        ↑
-        │ Browser
-        │
-        ▼
-chat-demo.js
-(Node HTTP Server)
-        │
-        ▼
-AI SDK
-        │
-        ▼
-Memory Client (gRPC)
-        │
-        ▼
-Memory API
-        │
-        ▼
-RabbitMQ
-        │
-        ▼
-Worker
-
-
-
-
+```
 Browser (chat-ui/app.js)
     │  HTTP POST /api/chat
     ▼
-chat-demo.js (handleChat)
-    │
+chat-demo.js
+    ├─► GetSemanticProfile → inject into system prompt
     ├─► OpenAI generateText({ tools })
-    │       │
-    │       │  LLM decides to call a tool (e.g. recall_memory)
-    │       ▼
-    │   memory-tools.js  (tool execute functions)
-    │       │
-    │       ▼
-    │   memory-client.js  (MemoryClient.assemble / search / …)
-    │       │
-    │       ▼ gRPC TCP :50052
-    │   grpc/server.js  (Assemble, Search, … handlers)
-    │       │
-    │       ▼
-    │   src/controller/*  (ContextAssembler, MemoryService, …)
-    │       │
-    │       ├─► Redis / Postgres / Qdrant
-    │       └─► RabbitMQ (AppendTurn / EndSession only, async jobs)
-    │
-    └─► memory.appendTurn() DIRECTLY (after generateText — not via tool today)
-            │
-            └── same path: memory-client → gRPC → server → Redis (+ maybe RabbitMQ summarize)
+    │       └─► recall_memory → gRPC Assemble → Redis + MemoryService → Postgres/Qdrant
+    └─► appendTurn → gRPC → Redis (+ maybe RabbitMQ summarize)
+
+End session:
+    POST /api/session/end → gRPC EndSession → RabbitMQ → worker
+        → SessionEndHandler → MemoryService → PostgresStore + QdrantStore
+```

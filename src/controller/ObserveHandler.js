@@ -1,6 +1,8 @@
 /**
- * AppendTurn handler — persists turns to Redis and schedules summarize jobs.
- * (Internal name ObserveHandler; public gRPC RPC is AppendTurn.)
+ * AppendTurn gRPC handler — persists turns to Redis and schedules summarize jobs.
+ *
+ * Internal class name is ObserveHandler; the public RPC is AppendTurn.
+ * Semantic profile updates happen at session end only (memory.session_end).
  */
 import { config } from "../config.js";
 
@@ -13,9 +15,10 @@ class ObserveHandler {
   sessionStore;
   memoryService;
   publisher;
+
   /**
-   * Append turn to Redis; schedule summarize when lastPromptTokens >= threshold.
-   * Semantic profile updates happen at session end only (memory.session_end).
+   * Append turn to Redis; publish memory.summarize when lastPromptTokens >= threshold.
+   * @returns {{ turnCount: number, lastPromptTokens: number, summarizeScheduled: boolean }}
    */
   async appendTurnSync(input) {
     const session = await this.sessionStore.appendTurn(input.conversationId, input.turn, {
@@ -38,6 +41,7 @@ class ObserveHandler {
     };
   }
 }
+
 export {
   ObserveHandler
 };

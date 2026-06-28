@@ -1,5 +1,12 @@
 /**
- * Redis working-memory store — session summary, recent turns, token counters.
+ * Redis working-memory store.
+ *
+ * Holds per-conversation state until session end (or TTL expiry):
+ *   summary           — rolling LLM-compressed history
+ *   recent            — raw turns not yet folded into summary
+ *   turn_count        — total turns this session
+ *   last_prompt_tokens — last chat LLM prompt size (triggers summarize job)
+ *
  * Keys: session:{conversationId}:{summary|recent|turn_count|last_prompt_tokens}
  */
 import { Redis } from "ioredis";
@@ -12,6 +19,7 @@ const keys = (conversationId) => ({
   lastPromptTokens: `session:${conversationId}:last_prompt_tokens`
 });
 
+/** Create ioredis client from config — caller must ping() before use. */
 function createRedisClient() {
   return new Redis({
     host: config.redis.host,
@@ -29,7 +37,7 @@ class RedisStore {
   }
   redis;
 
-
+  /** Read full session snapshot for a conversation. */
   async getSession(conversationId) {
     const k = keys(conversationId);
     const [summary, recentRaw, turnCountRaw, lastPromptTokensRaw] = await this.redis.mget(
@@ -55,7 +63,7 @@ class RedisStore {
     };
   }
 
-
+  /** Replace session fields (used after summarize folds recent → summary). */
   async setSession(state) {
     const k = keys(state.conversationId);
     const ttl = config.redis.sessionTtlSeconds;
@@ -71,7 +79,7 @@ class RedisStore {
     await pipeline.exec();
   }
 
-
+  /** Append one turn; optionally update lastPromptTokens from chat LLM usage. */
   async appendTurn(conversationId, turn, opts) {
     const session = await this.getSession(conversationId);
     const recent = [...session.recent, turn];
@@ -97,7 +105,6 @@ class RedisStore {
     return next;
   }
 
-
   async incrementTurnCount(conversationId) {
     const k = keys(conversationId);
     const ttl = config.redis.sessionTtlSeconds;
@@ -106,17 +113,15 @@ class RedisStore {
     return count;
   }
 
-
+  /** Delete all session keys — called after successful session_end consolidation. */
   async clearSession(conversationId) {
     const k = keys(conversationId);
     await this.redis.del(k.summary, k.recent, k.turnCount, k.lastPromptTokens);
   }
 
-
   async disconnect() {
     await this.redis.quit();
   }
-
 
   async health() {
     const start = Date.now();
@@ -128,7 +133,6 @@ class RedisStore {
     }
   }
 }
-
 
 export {
   RedisStore,

@@ -1,7 +1,14 @@
 /**
- * Platform bootstrap — wires Redis session store, Postgres/Qdrant long-term
- * memory, controllers, and optional RabbitMQ publisher.
- * Used by: grpc/server.js, worker/index.js, scripts/register-demo-agent.js
+ * Platform bootstrap — wires the three stores and controllers into one object.
+ *
+ * Stores:
+ *   RedisStore   → working memory (session summary, recent turns)
+ *   PostgresStore → metadata, agent policy, recall audit
+ *   QdrantStore  → long-term content + vectors
+ *
+ * MemoryService coordinates Postgres + Qdrant for all long-term reads/writes.
+ *
+ * Entry points: grpc/server.js, worker/index.js, scripts/register-demo-agent.js
  */
 import { config } from "./config.js";
 import { AgentSetupService } from "./controller/AgentSetupService.js";
@@ -12,42 +19,41 @@ import { PromptGenerator } from "./controller/PromptGenerator.js";
 import { SessionEndHandler } from "./controller/SessionEndHandler.js";
 import { SummarizeHandler } from "./controller/SummarizeHandler.js";
 import { createQdrantClient, probeQdrant } from "./qdrant/client.js";
-import { CollectionManager } from "./qdrant/collection-manager.js";
-import { QdrantMemoriesStore } from "./qdrant/memories-store.js";
 import { closePostgres, initPostgres, probePostgres } from "./postgres/client.js";
-import { MemoryMetadataDb } from "./postgres/memory-metadata.js";
-import { MemoryStoresDb } from "./postgres/memory-stores.js";
-import { RecallLogDb } from "./postgres/recall-log.js";
-import { PostgresQdrantMemories } from "./stores/MemoriesRepository.js";
+import { PostgresStore } from "./stores/PostgresStore.js";
+import { QdrantStore } from "./stores/QdrantStore.js";
 import { createRedisClient, RedisStore } from "./stores/RedisStore.js";
 
+/** Build handlers + stores. Optional publisher queues async jobs to RabbitMQ. */
 async function createMemoryPlatform(publisher = null) {
   if (!config.openai.apiKey) {
     throw new Error("[memory] OPENAI_API_KEY required - set in .env");
   }
   const { store: sessionStore, redis } = await createSessionStore();
-  const { memories, memoryStores, recallLog, postgresConnected, qdrantConnected } = await createLongTermStores();
-  const memoryService = new MemoryService(memories, memoryStores);
-  const promptGenerator = new PromptGenerator(memoryStores);
+  const { postgres, qdrant, postgresConnected, qdrantConnected } = await createLongTermStores();
+  const memoryService = new MemoryService(postgres, qdrant);
+  const promptGenerator = new PromptGenerator(postgres);
   console.log(
     `[memory] platform ready - postgres=${postgresConnected} qdrant=${qdrantConnected}`
   );
   return {
     sessionStore,
-    memories,
-    recallLog,
+    postgres,
+    qdrant,
     memoryService,
-    assembler: new ContextAssembler(sessionStore, memoryService, recallLog),
+    assembler: new ContextAssembler(sessionStore, memoryService, postgres),
     observeHandler: new ObserveHandler(sessionStore, memoryService, publisher),
     summarizeHandler: new SummarizeHandler(sessionStore),
     sessionEndHandler: new SessionEndHandler(sessionStore, memoryService, publisher),
     promptGenerator,
-    agentSetup: new AgentSetupService(memoryStores, promptGenerator, memories),
+    agentSetup: new AgentSetupService(postgres, promptGenerator, qdrant),
     postgresConnected,
     qdrantConnected,
     shutdown: () => shutdownConnections(redis, sessionStore)
   };
 }
+
+/** Close Redis connection and Postgres pool. */
 async function shutdownConnections(redis, sessionStore) {
   if (redis) {
     await redis.quit().catch(() => {
@@ -58,6 +64,8 @@ async function shutdownConnections(redis, sessionStore) {
   }
   await closePostgres();
 }
+
+/** Ping Redis and wrap the raw ioredis client in RedisStore. */
 async function createSessionStore() {
   const redis = createRedisClient();
   try {
@@ -72,6 +80,7 @@ async function createSessionStore() {
   }
 }
 
+/** Probe Postgres/Qdrant, apply schema, return store instances. */
 async function createLongTermStores() {
   const pgOk = await probePostgres().catch(() => false);
   const qdrantOk = await probeQdrant();
@@ -83,13 +92,11 @@ async function createLongTermStores() {
     }
   }
   if (pgOk && qdrantOk) {
-    const client = createQdrantClient();
-    const collectionManager = new CollectionManager(client);
-    const vectorMemories = new QdrantMemoriesStore(client, collectionManager);
+    const postgres = new PostgresStore();
+    const qdrant = new QdrantStore(createQdrantClient());
     return {
-      memories: new PostgresQdrantMemories(new MemoryMetadataDb(), vectorMemories),
-      memoryStores: new MemoryStoresDb(),
-      recallLog: new RecallLogDb(),
+      postgres,
+      qdrant,
       postgresConnected: true,
       qdrantConnected: true
     };
@@ -101,6 +108,7 @@ async function createLongTermStores() {
     `[memory] ${missing.join(" and ")} required - start docker compose (postgres, redis, rabbitmq, qdrant).`
   );
 }
+
 export {
   AgentSetupService,
   ContextAssembler,

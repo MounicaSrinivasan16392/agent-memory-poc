@@ -1,20 +1,61 @@
-/** Qdrant point upsert + vector search for long-term memories (one collection per agent). */
+/**
+ * Single Qdrant access layer for long-term memory content.
+ *
+ * One collection per agent: {QDRANT_COLLECTION_PREFIX}{agentId}
+ * Point id = memory_metadata.id (UUID) in Postgres.
+ *
+ * Payload fields: memory_id, agent_id, scope, type, content, is_deleted
+ * Semantic profiles use a zero vector; episodic/experiential use real embeddings.
+ */
 import { config } from "../config.js";
-import { agentCollectionName } from "./collection-manager.js";
 
-class QdrantMemoriesStore {
-  constructor(client, collectionManager) {
+/** Sanitize agent id for use as a Qdrant collection name. */
+function agentCollectionName(agentId) {
+  const safe = String(agentId).replace(/[^a-zA-Z0-9_]/g, "_");
+  return `${config.qdrant.collectionPrefix}${safe}`;
+}
+
+class QdrantStore {
+  constructor(client) {
     this.client = client;
-    this.collectionManager = collectionManager;
+    /** In-process cache — skip repeated getCollections checks per agent. */
+    this.ensured = new Set();
   }
   client;
-  collectionManager;
+  ensured;
 
-  /** Create the per-agent Qdrant collection if it does not exist yet. */
+  /** Create collection + payload indexes if missing. Returns collection name. */
   async ensureCollection(agentId) {
-    return this.collectionManager.ensureAgentCollection(agentId);
+    const name = agentCollectionName(agentId);
+    if (this.ensured.has(name)) return name;
+
+    const collections = await this.client.getCollections();
+    const exists = collections.collections?.some((c) => c.name === name);
+    if (!exists) {
+      await this.client.createCollection(name, {
+        vectors: {
+          size: config.embeddings.dimensions,
+          distance: "Cosine"
+        }
+      });
+      await this.client.createPayloadIndex(name, {
+        field_name: "scope",
+        field_schema: "keyword"
+      });
+      await this.client.createPayloadIndex(name, {
+        field_name: "type",
+        field_schema: "keyword"
+      });
+      await this.client.createPayloadIndex(name, {
+        field_name: "is_deleted",
+        field_schema: "bool"
+      });
+    }
+    this.ensured.add(name);
+    return name;
   }
 
+  /** Read content text for a point by postgres metadata id. */
   async getContent(agentId, memoryId) {
     const collection = agentCollectionName(agentId);
     try {
@@ -30,8 +71,12 @@ class QdrantMemoriesStore {
     }
   }
 
-  async index(doc) {
-    await this.collectionManager.ensureAgentCollection(doc.agentId);
+  /**
+   * Upsert one memory point. Pass embedding for episodic/experiential;
+   * omit embedding for semantic (zero vector used).
+   */
+  async upsertPoint(doc) {
+    await this.ensureCollection(doc.agentId);
     const collection = agentCollectionName(doc.agentId);
     const now = new Date().toISOString();
     const vector = doc.embedding ?? zeroVector(config.embeddings.dimensions);
@@ -62,11 +107,12 @@ class QdrantMemoriesStore {
   }
 
   /**
-   * Vector similarity search with payload filters.
+   * Cosine similarity search filtered by scope and type.
+   * includeShared=true adds __shared__ scope for experiential memories.
    */
-  async vectorSearch(agentId, userId, _query, topK, queryEmbedding, types, includeShared = false) {
+  async vectorSearch(agentId, userId, topK, queryEmbedding, types, includeShared = false) {
     if (!queryEmbedding?.length) return [];
-    await this.collectionManager.ensureAgentCollection(agentId);
+    await this.ensureCollection(agentId);
     const collection = agentCollectionName(agentId);
     const scopes = includeShared ? [userId, "__shared__"] : [userId];
     const filter = buildFilter(scopes, types);
@@ -111,5 +157,6 @@ function payloadToMemory(payload, pointId) {
 }
 
 export {
-  QdrantMemoriesStore
+  QdrantStore,
+  agentCollectionName
 };

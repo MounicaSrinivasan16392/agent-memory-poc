@@ -1,5 +1,11 @@
-/** One-shot registration for demo_sales_agent (memory_stores + memory_code). */
+/**
+ * One-shot registration for demo_sales_agent.
+ *
+ * Ensures memory_stores row, Qdrant collection, and LLM-generated memory_code.
+ * Run after docker compose up: npm run register:demo
+ */
 import { createMemoryPlatform } from "../src/index.js";
+
 async function main() {
   const platform = await createMemoryPlatform(null);
   const result = await platform.agentSetup.registerAgent({
@@ -10,6 +16,7 @@ async function main() {
   );
   await platform.shutdown();
 }
+
 main().catch((err) => {
   console.error(err);
   process.exit(1);

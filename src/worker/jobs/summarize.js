@@ -1,4 +1,8 @@
-/** RabbitMQ handler for memory.summarize — compress Redis recent turns into summary. */
+/**
+ * RabbitMQ job handler: memory.summarize
+ *
+ * Loads agent memory_code, then folds Redis recent turns into session summary.
+ */
 async function handleSummarize(platform, payload) {
   const job = payload;
   const memoryCode = await platform.memoryService.getMemoryCode(job.agentId);
@@ -8,9 +12,10 @@ async function handleSummarize(platform, payload) {
     memoryCode
   });
   if (result.updated) {
-    console.log(`[memory.summarize] ${job.conversationId} \u2192 summary updated (${result.summary?.length ?? 0} chars)`);
+    console.log(`[memory.summarize] ${job.conversationId} → summary updated (${result.summary?.length ?? 0} chars)`);
   }
 }
+
 export {
   handleSummarize
 };

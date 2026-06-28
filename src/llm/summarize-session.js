@@ -1,6 +1,10 @@
-/** Redis summarize LLM — folds evicted turns into one rolling summary JSON. */
+/**
+ * Redis summarize LLM task.
+ *
+ * Folds evicted recent turns + previous summary into one replacement summary.
+ * The previous summary is discarded — output is a single rolling prose block.
+ */
 import { callMemoryLlm } from "./memory-llm.js";
-
 
 async function summarizeSessionWithLlm(input) {
   if (input.evictedTurns.length === 0) {
@@ -31,6 +35,7 @@ ${turns}`
     throw new Error(`[memory] summarize LLM returned invalid JSON: ${raw.slice(0, 200)}`);
   }
 }
+
 export {
   summarizeSessionWithLlm
 };

@@ -1,25 +1,27 @@
 /**
- * Shared memory LLM caller — wraps platform.memory.system.md + agent memory_code.
- * Tasks: summarize, session_end
+ * Shared memory LLM caller.
+ *
+ * Loads platform.memory.system.md (global rules) and combines it with the agent's
+ * memory_code (extraction policy). Used by summarize and session_end tasks.
+ *
+ * All memory LLM calls return JSON — see platform.memory.system.md for schemas.
  */
-
-/** this function is used to call the memory LLM */
-/**
- * @param {string} task - the task to perform
- * @param {string} memoryCode - the memory code to use
- * @param {string} inputBlock - the input block to use - inputBlock is the input to the LLM ie input to the task is the chat messages.
- * @returns {Promise<string>} the response from the memory LLM
- */ 
-
-
 import OpenAI from "openai";
 import { config } from "../config.js";
 import { loadPlatformPrompt } from "./load-prompt.js";
 
-
+/**
+ * @param {"summarize" | "session_end"} task
+ * @param {string} memoryCode — agent extraction policy from memory_stores
+ * @param {string} inputBlock — task-specific context (session turns, summary, etc.)
+ * @returns {Promise<string>} raw JSON string from the model
+ */
 async function callMemoryLlm(task, memoryCode, inputBlock) {
   const client = new OpenAI({ apiKey: config.openai.apiKey });
-  const platform = loadPlatformPrompt("platform.memory.system.md");
+  const platform = loadPlatformPrompt("platform.memory.system.md").replaceAll(
+    "{{MAX_CONTENT_CHARS}}",
+    String(config.memory.maxContentChars)
+  );
   const response = await client.chat.completions.create({
     model: config.openai.model,
     temperature: task === "summarize" ? 0.3 : 0.1,
@@ -40,6 +42,7 @@ ${inputBlock}`
   });
   return response.choices[0]?.message?.content ?? "{}";
 }
+
 export {
   callMemoryLlm
 };

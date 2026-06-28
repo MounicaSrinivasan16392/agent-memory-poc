@@ -29,7 +29,7 @@ async function main() {
   const serviceDef = memoryPkg["MemoryAPI"].service;
   const server = new grpc.Server();
   server.addService(serviceDef, {
-    /** Assemble working memory and long-term hits into a context block for the LLM. Used by: clients/js/chat-demo.js, external chat services. */
+    /** Hot path: Redis session + semantic profile + vector recall → context_block. */
     Assemble: (async (call, cb) => {
       try {
         const req = call.request;
@@ -55,7 +55,7 @@ async function main() {
         cb(err, null);
       }
     }),
-    /** Return Redis session snapshot (summary, recent turns, turn count) for a conversation. Used by: chat UI, debugging clients. */
+    /** Redis session snapshot — summary, recent turns, token counters. */
     GetSession: (async (call, cb) => {
       try {
         const conversationId = String(call.request["conversation_id"]);
@@ -71,7 +71,7 @@ async function main() {
         cb(err, null);
       }
     }),
-    /** Persist one turn to Redis and optionally publish memory.summarize when over token threshold. Used by: clients/js/chat-demo.js */
+    /** Persist turn to Redis; queue memory.summarize when over token threshold. */
     AppendTurn: (async (call, cb) => {
       try {
         const req = call.request;
@@ -135,7 +135,7 @@ async function main() {
         cb(err, null);
       }
     }),
-    /** Schedule or run session-end consolidation (semantic reconcile + episodic write). Used by: clients/js/chat-demo.js EndSession. */
+    /** Queue or run session_end — semantic reconcile + episodic/experiential writes. */
     EndSession: (async (call, cb) => {
       try {
         const req = call.request;
@@ -160,7 +160,7 @@ async function main() {
         cb(err, null);
       }
     }),
-    /** Register agent: ensure store and generate memory_code. Used by: scripts/register-demo-agent.js, RegisterAgent gRPC. */
+    /** One-time agent setup — postgres store, Qdrant collection, memory_code generation. */
     RegisterAgent: (async (call, cb) => {
       try {
         const req = call.request;

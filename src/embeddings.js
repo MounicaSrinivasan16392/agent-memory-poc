@@ -13,7 +13,7 @@ async function embedText(text) {
   const openai = getClient();
   const res = await openai.embeddings.create({
     model: config.embeddings.model,
-    input: text.slice(0, 8e3),
+    input: text,
     dimensions: config.embeddings.dimensions
   });
   const embedding = res.data[0]?.embedding;

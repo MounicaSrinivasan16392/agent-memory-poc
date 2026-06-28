@@ -2,33 +2,26 @@ import { embedText } from "../embeddings.js";
 import { config } from "../config.js";
 
 /**
- * Long-term memory orchestration — search, semantic profile CRUD, episodic writes.
- * Joins Postgres metadata with Qdrant content via MemoriesRepository.
+ * Long-term memory business logic.
+ *
+ * Coordinates PostgresStore (metadata rows) + QdrantStore (content + vectors).
+ * Handlers and gRPC routes call this class — not the stores directly.
+ *
+ * Dual-write pattern (every long-term write):
+ *   1. postgres — insert/upsert memory_metadata row (id = Qdrant point id)
+ *   2. qdrant   — upsertPoint with content (+ embedding for episodic/experiential)
  */
 class MemoryService {
-  /**
-   * @param memories Combined Postgres + Qdrant memories repository.
-   * @param memoryStores Postgres agent policy store (memory_code, specification).
-   */
-  constructor(memories, memoryStores) {
-    this.memories = memories;
-    this.memoryStores = memoryStores;
+  constructor(postgres, qdrant) {
+    this.postgres = postgres;
+    this.qdrant = qdrant;
   }
-  memories;
-  memoryStores;
+  postgres;
+  qdrant;
+
   /**
-   * Qdrant vector search over episodic and experiential memories.
-   * Semantic profile is loaded separately (session start / assemble), not via search.
-   *
-   * @param agentId Agent whose memories to search.
-   * @param userId User scope for episodic memories.
-   * @param query User query text (required — empty query returns no hits).
-   * @param options.topK Maximum hits to return (default 6).
-   * @param options.types Memory types to search (semantic is excluded).
-   * @param options.includeShared Whether to include __shared__ experiential scope.
-   * @returns Vector-ranked episodic/experiential hits.
-   *
-   * Used by: ContextAssembler.assemble, clients/js search, grpc/server Search.
+   * Vector search over episodic/experiential memories.
+   * Semantic profile is excluded — use getSemanticProfile() instead.
    */
   async searchMemories(agentId, userId, query, options) {
     const types = (options?.types ?? config.memory.typesEnabled).filter((t) => t !== "semantic");
@@ -38,10 +31,9 @@ class MemoryService {
       return [];
     }
     const { embedding } = await embedText(query);
-    const vectorHits = await this.memories.vectorSearch(
+    const vectorHits = await this.qdrant.vectorSearch(
       agentId,
       userId,
-      query,
       topK,
       embedding,
       types,
@@ -54,45 +46,37 @@ class MemoryService {
       score: h.score
     }));
   }
-  /**
-   * Read the user's consolidated semantic profile blob.
-   * Returns the single semantic profile record loaded at chat start and used
-   * as context for session-end consolidation.
-   *
-   * @param agentId Agent identifier.
-   * @param userId User scope.
-   * @returns Semantic profile record or null when none exists.
-   *
-   * Used by: SessionEndHandler.finalizeSession, clients/js via gRPC.
-   */
+
+  /** Load semantic profile: postgres metadata row + qdrant content by point id. */
   async getSemanticProfile(agentId, userId) {
-    return this.memories.getSemanticProfile(agentId, userId);
+    const meta = await this.postgres.getProfileMetadata(agentId, userId, "semantic");
+    if (!meta) return null;
+    const content = await this.qdrant.getContent(agentId, meta.id);
+    if (!content?.trim()) return null;
+    return toMemoryRecord(meta, content);
   }
-  /**
-   * Replace the user's semantic profile after session-end consolidation.
-   * Overwrites the full profile content rather than merging individual facts so
-   * the LLM consolidation output becomes the authoritative semantic state.
-   *
-   * @param agentId Agent identifier.
-   * @param userId User scope.
-   * @param content New profile markdown text.
-   * @returns Updated profile record from the repository.
-   *
-   * Used by: SessionEndHandler.finalizeSession.
-   */
+
+  /** Replace user's semantic profile (session end only). Uses zero vector in Qdrant. */
   async setSemanticProfile(agentId, userId, content) {
-    return this.memories.setSemanticProfile(agentId, userId, content);
+    const trimmed = content.trim();
+    if (!trimmed) return null;
+    assertContentLength(trimmed, "semantic_profile");
+    const meta = await this.postgres.upsertProfileMetadata({
+      agentId,
+      scope: userId,
+      memoryTypeKey: "semantic"
+    });
+    await this.qdrant.upsertPoint({
+      memoryId: meta.id,
+      agentId,
+      scope: userId,
+      type: "semantic",
+      content: trimmed
+    });
+    return toMemoryRecord(meta, trimmed);
   }
-  /**
-   * Persist one episodic session narrative at conversation end.
-   * Idempotent on sourceMessageId so re-running session_end updates rather than
-   * duplicates the episodic record for the same conversation.
-   *
-   * @param input Agent, user, conversation ids, and narrative content.
-   * @returns True when a record was inserted or updated.
-   *
-   * Used by: SessionEndHandler.finalizeSession.
-   */
+
+  /** Write one episodic session narrative (idempotent per conversationId). */
   async writeEpisodicSession(input) {
     return this.writeScopedSession({
       ...input,
@@ -101,73 +85,60 @@ class MemoryService {
       sourceMessageId: `session_end:${input.conversationId}`
     });
   }
-  /**
-   * Persist a shared experiential insight (PII stripped by session_end LLM).
-   * Writes to __shared__ scope so all users benefit from agent-level learnings
-   * when experiential memory is enabled for the agent.
-   *
-   * @param input Agent, conversation ids, and insight content.
-   * @returns True when a record was inserted or updated.
-   *
-   * Used by: SessionEndHandler.finalizeSession.
-   */
+
+  /** Write shared experiential insight under __shared__ scope (optional, session end). */
   async writeExperientialInsight(input) {
     return this.writeScopedSession({
       agentId: input.agentId,
-      userId: input.conversationId,
-      conversationId: input.conversationId,
-      content: input.content,
       scope: "__shared__",
       type: "experiential",
+      content: input.content,
       sourceMessageId: `experiential:${input.conversationId}`
     });
   }
+
   /**
-   * Insert or update a scoped session-derived memory with idempotent sourceMessageId.
-   * Shared by episodic and experiential session-end writers to avoid duplicate
-   * records when consolidation jobs retry.
+   * Insert or update episodic/experiential memory.
+   * Idempotent on sourceMessageId — retries update the same postgres/qdrant point.
    */
   async writeScopedSession(input) {
-    const existing = await this.memories.getBySourceMessageId(
+    assertContentLength(input.content, input.type);
+    const existing = await this.postgres.getMemoryBySourceMessageId(
       input.agentId,
       input.scope,
       input.sourceMessageId,
       input.type
     );
+    let meta;
     if (existing) {
-      const updated = await this.memories.updateContent(existing.id, input.content);
-      if (updated) {
-        const { embedding: embedding2 } = await embedText(updated.content);
-        await this.memories.indexToSearch(updated, embedding2);
-        return true;
-      }
+      meta = existing;
+    } else {
+      meta = await this.postgres.insertMemoryMetadata({
+        agentId: input.agentId,
+        scope: input.scope,
+        memoryTypeKey: input.type,
+        sourceMessageId: input.sourceMessageId
+      });
+      if (!meta) return false;
     }
-    const record = await this.memories.insert({
-      agentId: input.agentId,
-      scope: input.scope,
-      type: input.type,
+    const { embedding } = await embedText(input.content);
+    await this.qdrant.upsertPoint({
+      memoryId: meta.id,
+      agentId: meta.agentId,
+      scope: meta.scope,
+      type: meta.memoryTypeKey,
       content: input.content,
-      sourceMessageId: input.sourceMessageId
+      embedding
     });
-    if (!record) return false;
-    const { embedding } = await embedText(record.content);
-    await this.memories.indexToSearch(record, embedding);
     return true;
   }
-  /**
-   * Load the agent-specific memory_code LLM policy document.
-   * Used by session_end and summarize paths to steer consolidation.
-   *
-   * @param agentId Agent identifier.
-   * @returns memory_code markdown string.
-   *
-   * Used by: SessionEndHandler.finalizeSession, SummarizeHandler (via job payload).
-   */
+
+  /** Load agent memory_code from postgres (required for summarize + session_end LLM). */
   async getMemoryCode(agentId) {
-    if (!this.memoryStores) {
-      throw new Error("[memory] memory stores unavailable - cannot load memory_code");
+    if (!this.postgres) {
+      throw new Error("[memory] postgres unavailable - cannot load memory_code");
     }
-    const store = await this.memoryStores.ensureDefaultForAgent(agentId);
+    const store = await this.postgres.ensureAgentStore(agentId);
     if (!store.memoryCode?.trim()) {
       throw new Error(
         `[memory] no memory_code for agent "${agentId}" - run register:agents or RegisterAgent gRPC first`
@@ -176,6 +147,28 @@ class MemoryService {
     return store.memoryCode;
   }
 }
+
+/** Join postgres metadata row with content string into a single record shape. */
+function toMemoryRecord(meta, content) {
+  return {
+    id: meta.id,
+    agentId: meta.agentId,
+    scope: meta.scope,
+    type: meta.memoryTypeKey,
+    content,
+    isDeleted: meta.isDeleted
+  };
+}
+
+/** Enforce MEMORY_MAX_CONTENT_CHARS from platform prompt / config. */
+function assertContentLength(content, field) {
+  const max = config.memory.maxContentChars;
+  if (content.length <= max) return;
+  throw new Error(
+    `[memory] ${field} is ${content.length} chars — exceeds MEMORY_MAX_CONTENT_CHARS (${max})`
+  );
+}
+
 export {
   MemoryService
 };

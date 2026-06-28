@@ -12,6 +12,7 @@ Follow AGENT_MEMORY_CODE for domain rules. Enforce platform invariants below.
 - Return ONLY valid JSON matching the task schema
 - **Semantic profile** (long-term facts) is updated only on **TASK: session_end** — never on summarize
 - Session end: reconcile semantic profile + optional episodic narrative (+ experiential when enabled)
+- **Content limit:** each session_end text field (`semantic_profile`, `episodic`, `experiential`) must be **at most {{MAX_CONTENT_CHARS}} characters**. Use concise bullet facts for semantic_profile; one short paragraph for episodic/experiential. Do not exceed the limit.
 - Summarize: replace Redis rolling summary — compress (previous summary + evicted turns) into one new prose summary; do not write long-term semantic facts
 - **Experiential** (`__shared__` scope): only when enabled in agent policy. When `experiential` is non-null, strip all PII before returning it — no person names, emails, phone numbers, company/account names, or other identifiers tied to a specific user. Use generic phrasing so the insight is safe to reuse across users.
 

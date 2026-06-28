@@ -1,21 +1,20 @@
 /**
- * Vercel AI SDK memory tools — call memory-api over gRPC only.
+ * Vercel AI SDK memory tools — thin wrappers over memory-api gRPC.
  *
- * FluentMind agent builder pattern:
- *   User → LLM → these tools → gRPC memory-api → RabbitMQ → worker
+ * Agent builder pattern:
+ *   User → chat LLM → these tools → gRPC memory-api → RabbitMQ → worker
+ *
+ * @param {import('./memory-client.js').MemoryClient} memoryClient
+ * @param {{ agentId: string, userId: string, conversationId: string, lastPromptTokens?: number }} ctx
  */
-import { tool } from 'ai';
-import { z } from 'zod';
-import crypto from 'crypto';
+import { tool } from "ai";
+import { z } from "zod";
+import crypto from "crypto";
 
 function newTurnId() {
   return crypto.randomUUID();
 }
 
-/**
- * @param {import('./memory-client.js').MemoryClient} memoryClient
- * @param {{ agentId: string, userId: string, conversationId: string }} ctx
- */
 export function createMemoryTools(memoryClient, ctx) {
   const recall_memory = tool({
     description:
@@ -45,7 +44,7 @@ export function createMemoryTools(memoryClient, ctx) {
   });
 
   const search_memories = tool({
-    description: 'Vector search over episodic and experiential long-term memories.',
+    description: 'Vector search over episodic and experiential long-term memories (semantic excluded).',
     inputSchema: z.object({
       query: z.string(),
       topK: z.number().int().min(1).max(20).optional(),
