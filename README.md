@@ -141,9 +141,10 @@ Long-term memory uses a **split store**: Postgres holds config and index metadat
 ```
 Redis (session)          Postgres (config + metadata)     Qdrant (content + vectors)
 ─────────────────        ────────────────────────────     ────────────────────────────
-summary, recent turns    memory_stores (per agent)        {prefix}{agentId} collection
-turn_count               memory_types (global catalog)      content, embedding
-last_prompt_tokens       memory_metadata (per memory)       vector + payload filters
+summary, recent turns    memory_types (global catalog)    {prefix}{agentId} collection
+turn_count               memory_stores (per agent)          content, embedding
+last_prompt_tokens       memory_store_types (junction)      vector + payload filters
+                         memory_metadata (per memory)
                          memory_recall_log (audit)
 ```
 
@@ -164,41 +165,123 @@ Updated on every `AppendTurn`. Cleared on `EndSession` (optional). Summarize job
 
 ---
 
-### `memory_types` — global catalog (Postgres only)
+### Postgres — five tables in `fluentmind_memory`
 
-Three platform-wide rows seeded at agent registration (`semantic`, `episodic`, `experiential`). Describes *kinds* of long-term memory — not per-user data.
+Schema is applied on startup from `src/postgres/schema.sql`. Postgres holds **configuration + metadata only** — memory **content** lives in Qdrant.
 
-| Field | Description |
-|-------|-------------|
-| `type_key` | `semantic` \| `episodic` \| `experiential` |
-| `scope_mode` | `user` (per-user) or `shared` (experiential → `__shared__`) |
-| `write_trigger` | All are `session_end` in this POC |
-| `profile_mode` | `true` for semantic (one profile blob per user) |
-
-Runtime enabled types come from **`memory_stores.specification.types_enabled`**.
+| Table | Rows represent | Written when |
+|-------|----------------|--------------|
+| `memory_types` | Global catalog of memory kinds | Agent registration (seed) |
+| `memory_stores` | One agent's policy + `memory_code` | `RegisterAgent` / `npm run register:demo` |
+| `memory_store_types` | Which types an agent store enables | Agent registration (link) |
+| `memory_metadata` | Index row per long-term memory | Session end |
+| `memory_recall_log` | Assemble audit trail | Every `Assemble` with a user query |
 
 ---
 
-### `memory_stores` — one row per agent (Postgres only)
+#### `memory_types` — global catalog
+
+Platform-wide rows describing *kinds* of long-term memory (`semantic`, `episodic`, `experiential`). Seeded at agent registration — not per-user data.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | VARCHAR(36) PK | UUID |
+| `type_key` | VARCHAR(64) UNIQUE | `semantic` \| `episodic` \| `experiential` |
+| `display_name` | VARCHAR(255) | Human label (e.g. "Semantic facts") |
+| `scope_mode` | VARCHAR(32) | `user` (per-user scope) or `shared` (experiential → `__shared__`) |
+| `write_trigger` | VARCHAR(32) | When this type is persisted — all `session_end` in this POC |
+| `embed_on_write` | BOOLEAN | Whether to embed content in Qdrant (`true` for episodic/experiential) |
+| `profile_mode` | BOOLEAN | `true` for semantic — one profile blob per user, upserted not appended |
+| `sort_order` | INT | Display / link ordering |
+| `specification` | JSONB | Optional per-type config (defaults to `{}`) |
+| `created_at` | TIMESTAMPTZ | Row creation time |
+
+Runtime enabled types come from **`memory_stores.specification.types_enabled`**, not by querying this table directly on every request.
+
+---
+
+#### `memory_stores` — one row per agent
 
 Agent-level policy and the generated **`memory_code`** (LLM extraction rules for summarize + session_end).
 
-| Field | Description |
-|-------|-------------|
-| `agent_id` | Agent identifier (e.g. `demo_sales_agent`) |
-| `memory_code` | Markdown policy — loaded for memory LLM jobs (`npm run register:demo`) |
-| `specification` | JSON policy (`types_enabled`, `summarize_token_threshold`, etc.) |
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | VARCHAR(36) PK | UUID — internal store id |
+| `agent_id` | VARCHAR(255) UNIQUE | Agent identifier (e.g. `demo_sales_agent`) |
+| `name` | VARCHAR(255) | Display name (e.g. "Default memory — demo_sales_agent") |
+| `ref_name` | VARCHAR(255) UNIQUE | Internal reference (e.g. `default_demo_sales_agent`) |
+| `description` | TEXT | Optional agent description |
+| `memory_code` | TEXT | Markdown policy — loaded for memory LLM jobs (`npm run register:demo`) |
+| `specification` | JSONB | Policy JSON — see below |
+| `created_at` | TIMESTAMPTZ | Row creation time |
+| `updated_at` | TIMESTAMPTZ | Last update (e.g. when `memory_code` is regenerated) |
+
+**`specification` JSON keys:**
+
+| Key | Default | Purpose |
+|-----|---------|---------|
+| `types_enabled` | `["semantic","episodic","experiential"]` | Which memory types this agent writes/recalls |
+| `retrieval_k` | `4` | Vector recall top-K |
+| `summarize_token_threshold` | `1000` | Prompt token count that triggers `memory.summarize` |
+| `embed_model` | `text-embedding-3-large` | Embedding model hint |
 
 ---
 
-### `memory_metadata` — index row per long-term memory (Postgres only)
+#### `memory_store_types` — agent ↔ type junction
+
+Links each `memory_stores` row to the global `memory_types` catalog. One row per (store, type) pair.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `memory_store_id` | VARCHAR(36) FK → `memory_stores.id` | Agent store |
+| `memory_type_id` | VARCHAR(36) FK → `memory_types.id` | Catalog type |
+
+**Primary key:** `(memory_store_id, memory_type_id)`. All three types are linked when an agent is registered.
+
+---
+
+#### `memory_metadata` — index row per long-term memory
 
 **No content text here** — `id` is the Qdrant point id (content + vectors live in Qdrant).
 
-**Semantic** uses profile mode: one active row per `(agent, user, semantic)`.  
-**Episodic / experiential** get a new row per session-end write (deduped by `source_message_id`).
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | VARCHAR(36) PK | UUID — same value as the Qdrant point id |
+| `agent_id` | VARCHAR(255) | Agent that owns this memory |
+| `memory_type_key` | VARCHAR(64) | `semantic` \| `episodic` \| `experiential` |
+| `scope` | VARCHAR(255) | User id for semantic/episodic; `__shared__` for experiential |
+| `source_message_id` | VARCHAR(255) | Idempotency key — e.g. `session_end:{conversationId}` or `experiential:{conversationId}` |
+| `is_deleted` | BOOLEAN | Soft-delete flag (default `false`) |
+| `created_at` | TIMESTAMPTZ | Row creation time |
+| `updated_at` | TIMESTAMPTZ | Last update (retries on same idempotency key update this row) |
 
-Written at **session end** only.
+**Write behavior:**
+
+- **Semantic** — profile mode: one active row per `(agent_id, scope, semantic)`; upserted at session end.
+- **Episodic / experiential** — one row per session-end write; deduped by `(source_message_id, memory_type_key)`.
+
+**Indexes:** unique partial index on `(source_message_id, memory_type_key)`; index on `(agent_id, scope)`.
+
+Written at **session end** only (not during chat or summarize).
+
+---
+
+#### `memory_recall_log` — assemble audit trail
+
+Records what long-term memories were injected during each `Assemble` call (when the user query is non-empty).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | VARCHAR(36) PK | UUID |
+| `agent_id` | VARCHAR(255) | Agent |
+| `user_id` | VARCHAR(255) | User |
+| `conversation_id` | VARCHAR(255) | Conversation |
+| `user_query` | TEXT | Query passed to `Assemble` / vector search |
+| `memories_injected` | JSONB | Array of recalled memory objects (id, type, content, score) |
+| `latency_ms` | INT | Assemble duration in milliseconds |
+| `created_at` | TIMESTAMPTZ | When the assemble happened |
+
+**Index:** `(agent_id, created_at DESC)` for per-agent audit queries.
 
 ---
 
